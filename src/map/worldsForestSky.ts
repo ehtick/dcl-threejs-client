@@ -3,7 +3,8 @@
  * with a modest brightness lift so it isn't pitch black.
  */
 import * as THREE from 'three'
-import { DclGenesisSky, sampleSkyGradientsAt } from '../environment/DclGenesisSky'
+import { sampleSkyGradientsAt } from '../environment/DclGenesisSky'
+import { DaySky } from '../environment/DaySky'
 import {
   EQUATOR_AMBIENT_NIGHT,
   HEMI_NIGHT_INTENSITY,
@@ -24,7 +25,7 @@ const _purpleSky = new THREE.Color(0xb48cff)
 const _purpleEquator = new THREE.Color(0x9a78c8)
 
 export class ForestNightSky {
-  private readonly sky = new DclGenesisSky()
+  private readonly sky = new DaySky()
   private readonly moon = new THREE.DirectionalLight(0x9a7cff, 0.5)
   private readonly moonTarget = new THREE.Object3D()
   private readonly hemi = new THREE.HemisphereLight(0xb48cff, 0x1a1228, HEMI_NIGHT_INTENSITY)
@@ -75,6 +76,7 @@ export class ForestNightSky {
     celestialDirection(seconds, _celestial)
     const g = sampleSkyGradientsAt(seconds)
     this.camera.getWorldPosition(this.sky.mesh.position)
+    this.sky.mesh.scale.setScalar(Math.max(240, this.camera.far * 0.65))
     this.sky.update(seconds, _celestial, dt, false)
 
     const moonLit = moonLightIntensity(seconds)

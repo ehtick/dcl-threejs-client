@@ -24,7 +24,7 @@ import { allHashesForProfile } from '../dcl/landscape/EnvironmentCatalog'
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import { resolveFftOceanSettings } from '../environment/fftOcean/readFftOceanOverride'
 import { SpaceSkyField } from '../environment/SpaceSkyField'
-import { DclGenesisSky } from '../environment/DclGenesisSky'
+import { DaySky } from '../environment/DaySky'
 import { celestialDirection } from '../environment/sunCycleSampler'
 import type { DesertAtmosphere } from '../environment/DesertAtmosphere'
 import { resolveMountainsSettings } from '../environment/mountainsDefaults'
@@ -92,8 +92,8 @@ export class TerrainEditorWorkspace {
   private editorWater: EditorBiomeWater | null = null
   private editorGrass: EditorGrassPaint | null = null
   private spaceSky: SpaceSkyField | null = null
-  /** Outdoor Genesis sky dome (island / water / land / …) — not used for space. */
-  private outdoorSky: DclGenesisSky | null = null
+  /** Outdoor photographed HDRI sky (island / water / land / …) — not used for space. */
+  private outdoorSky: DaySky | null = null
   private outdoorSkyLoad: Promise<void> | null = null
   /** Same landscape group the play client builds (`buildParcelLandscape`). */
   private landscapeRoot: THREE.Group | null = null
@@ -887,11 +887,11 @@ export class TerrainEditorWorkspace {
   }
 
   /**
-   * Play-client Genesis sky dome for outdoor biomes (island / water / land / desert / …).
+   * Play-client DaySky HDRI dome for outdoor biomes (island / water / land / desert / …).
    * Space uses {@link SpaceSkyField} instead.
    */
   private async ensureOutdoorSky(scene: THREE.Scene): Promise<void> {
-    const show = (sky: DclGenesisSky): void => {
+    const show = (sky: DaySky): void => {
       sky.mesh.visible = true
       if (sky.mesh.parent !== scene) scene.add(sky.mesh)
       // Dome owns the look — clear solid fallback once ready.
@@ -906,7 +906,7 @@ export class TerrainEditorWorkspace {
 
     if (!this.outdoorSkyLoad) {
       this.outdoorSkyLoad = (async () => {
-        const sky = new DclGenesisSky()
+        const sky = new DaySky()
         try {
           await sky.loadTextures()
         } catch (e) {
@@ -934,6 +934,8 @@ export class TerrainEditorWorkspace {
     const sky = this.outdoorSky
     if (!sky || !sky.mesh.visible) return
     sky.mesh.position.copy(camera.position)
+    const far = camera instanceof THREE.PerspectiveCamera ? camera.far : 800
+    sky.mesh.scale.setScalar(Math.max(240, far * 0.65))
     celestialDirection(EDITOR_SKY_SECONDS, _editorCelestial)
     sky.update(EDITOR_SKY_SECONDS, _editorCelestial, delta, false)
   }

@@ -1,6 +1,8 @@
 /** Static sky / environment textures served from `public/environment/`. */
 export const ENVIRONMENT_TEXTURE_BASE = '/environment/'
 
+export const ENVIRONMENT_SKY_BASE = `${ENVIRONMENT_TEXTURE_BASE}sky/`
+
 export const ENVIRONMENT_TEXTURES = {
   islandShoreGround: `${ENVIRONMENT_TEXTURE_BASE}IslandShoreGround.png`,
   moon: `${ENVIRONMENT_TEXTURE_BASE}SkyboxMoon.png`,

@@ -298,7 +298,7 @@ export const PERFORMANCE_INTEGRATION: IntegrationEntry[] = [
 
 /** Outdoor / world shell — landscapes, ocean, scatter (not ECS SkyboxTime). */
 export const ENVIRONMENT_INTEGRATION: IntegrationEntry[] = [
-  { id: 'env:genesis-sky', name: 'GenesisSky procedural dome', status: 'render', category: 'environment', notes: 'DclGenesisSky shader + cross cubemap clouds' },
+  { id: 'env:genesis-sky', name: 'Genesis-lab HDRI skydome', status: 'render', category: 'environment', notes: 'DaySky Poly Haven puresky + SkyboxTime crossfade / night stars' },
   { id: 'env:landscape-parcels', name: 'Landscape parcel tiles', status: 'render', category: 'environment', notes: 'LandscapeSystem + TerrainModel' },
   {
     id: 'env:fft-ocean',

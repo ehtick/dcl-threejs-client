@@ -22,7 +22,8 @@ import {
   sunExposureMultiplier,
   type SunEnvironmentSettingsState
 } from '../rendering/SunEnvironmentSettings'
-import { DclGenesisSky, sampleSkyGradientsAt } from './DclGenesisSky'
+import { sampleSkyGradientsAt } from './DclGenesisSky'
+import { DaySky } from './DaySky'
 import {
   CYCLE_RATE,
   EQUATOR_AMBIENT_DAY,
@@ -91,9 +92,9 @@ function sceneLightingFromResolvedSkybox(skybox?: SkyboxConfig): Partial<SunEnvi
   return out
 }
 
-/** DCL GenesisSky dome + sun/moon lighting — driven by SkyboxTime + SunCycle24h.anim. */
+/** Photographed HDRI dome (genesis-lab DaySky) + sun/moon lighting — SkyboxTime + SunCycle24h.anim. */
 export class EnvironmentSystem {
-  private readonly genesisSky: DclGenesisSky
+  private readonly daySky: DaySky
   private readonly sun: THREE.DirectionalLight
   private readonly moon: THREE.DirectionalLight
   /** Unity Trilight: sky + ground (HemisphereLight). */
@@ -146,7 +147,7 @@ export class EnvironmentSystem {
     private readonly host: SceneHost,
     private readonly lightManager?: LightManager
   ) {
-    this.genesisSky = new DclGenesisSky()
+    this.daySky = new DaySky()
 
     // Construct defaults match Explorer noon-ish trilight until first applyTime overwrites.
     // Equator lavender + dark red ground (not cool cyan / green) — softer yellow outdoor fill.
@@ -176,7 +177,7 @@ export class EnvironmentSystem {
     this.disableMoon = scene.skyLighting.disableMoon
     const landscapeProfile = landscapeEnvironmentProfile(this.landscapeKind)
 
-    threeScene.add(this.genesisSky.mesh)
+    threeScene.add(this.daySky.mesh)
     threeScene.add(this.hemi)
     threeScene.add(this.equatorAmbient)
     threeScene.add(this.sun)
@@ -210,13 +211,17 @@ export class EnvironmentSystem {
     await this.applyCustomSkybox(scene.skybox, scene.assetUrl)
     const hideSkyDome = landscapeProfile.spaceSky === true || landscapeProfile.voidSky === true
     if (!this.customCube && !this.customBackground && !hideSkyDome) {
-      await this.genesisSky.loadTextures()
+      try {
+        await this.daySky.loadTextures()
+      } catch (err) {
+        console.warn('[environment] DaySky HDR load failed — sky will stay unmapped', err)
+      }
     } else if (landscapeProfile.spaceSky) {
-      this.genesisSky.mesh.visible = false
+      this.daySky.mesh.visible = false
       this.mountSpaceSky(scene)
     } else if (landscapeProfile.voidSky) {
       this.host.scene.background = new THREE.Color(VOID_SKY_BACKGROUND)
-      this.genesisSky.mesh.visible = false
+      this.daySky.mesh.visible = false
     }
     this.applyTime(this.displayTime, 0)
   }
@@ -294,8 +299,8 @@ export class EnvironmentSystem {
     this.outdoorIbl = null
     this.spaceSky?.dispose()
     this.spaceSky = null
-    this.genesisSky.dispose()
-    this.genesisSky.mesh.removeFromParent()
+    this.daySky.dispose()
+    this.daySky.mesh.removeFromParent()
     this.hemi.removeFromParent()
     this.equatorAmbient.removeFromParent()
     this.sun.removeFromParent()
@@ -498,17 +503,18 @@ export class EnvironmentSystem {
       !spaceSky &&
       !voidSky &&
       !skylightOff
-    this.genesisSky.mesh.visible = useGenesis
+    this.daySky.mesh.visible = useGenesis
 
     if (useGenesis) {
-      this.host.camera.getWorldPosition(this.genesisSky.mesh.position)
-      // Fixed TOD freezes the *sun clock*, not cloud drift — always scroll clouds.
-      this.genesisSky.update(seconds, _celestial, delta, false)
+      this.host.camera.getWorldPosition(this.daySky.mesh.position)
+      const far = this.host.camera instanceof THREE.PerspectiveCamera ? this.host.camera.far : 800
+      this.daySky.mesh.scale.setScalar(Math.max(240, far * 0.65))
+      this.daySky.update(seconds, _celestial, delta, false)
       if (this.disableSun) {
-        this.genesisSky.uniforms.uSunRadiance.value = 0
+        this.daySky.uniforms.uSunRadiance.value = 0
       }
       if (this.disableMoon) {
-        this.genesisSky.uniforms.uMoonMask.value = 0
+        this.daySky.uniforms.uMoonMask.value = 0
       }
     }
 
@@ -666,7 +672,7 @@ export class EnvironmentSystem {
         const urls = textures.slice(0, 6).map((entry) => resolveTextureUrl(entry, assetUrl))
         this.customCube = await loader.loadAsync(urls)
         this.host.scene.background = this.customCube
-        this.genesisSky.mesh.visible = false
+        this.daySky.mesh.visible = false
         return
       }
 
@@ -674,9 +680,9 @@ export class EnvironmentSystem {
       this.customBackground = await loader.loadAsync(resolveTextureUrl(textures[0]!, assetUrl))
       this.customBackground.colorSpace = THREE.SRGBColorSpace
       this.host.scene.background = this.customBackground
-      this.genesisSky.mesh.visible = false
+      this.daySky.mesh.visible = false
     } catch (err) {
-      console.warn('[environment] custom skybox load failed — using GenesisSky', err)
+      console.warn('[environment] custom skybox load failed — using DaySky', err)
     }
   }
 }
