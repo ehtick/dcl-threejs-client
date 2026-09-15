@@ -1,5 +1,10 @@
 import * as THREE from 'three'
-import { AvatarAnimations, type AvatarLocomotionState } from './AvatarAnimations'
+import {
+  AvatarAnimations,
+  AVATAR_ANIM_PRIME_DELTA,
+  AVATAR_IDLE_LOCOMOTION,
+  type AvatarLocomotionState
+} from './AvatarAnimations'
 import { composeAvatarFromProfile } from './AvatarComposer'
 import { disposeWearableInstance } from './loadWearable'
 import { PEER_URL } from './constants'
@@ -71,6 +76,7 @@ export class SceneAvatar {
         peerUrl: this.peerUrl,
         assetCache: this.assetCache
       })
+      this.animations.update(AVATAR_ANIM_PRIME_DELTA, AVATAR_IDLE_LOCOMOTION)
       applyAvatarPivotOffset(this.pivot, this.model)
     } catch (err) {
       console.warn('[AvatarShape] idle emote failed — bind pose only', err)

@@ -29907,6 +29907,13 @@
         -webkit-box-orient: vertical;
         overflow: hidden;
       }
+      .scene-watch-dest-scene-card-updated {
+        margin: 0;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: rgba(244, 244, 245, 0.48);
+      }
       .scene-watch-dest-scene-card-creator {
         display: flex;
         align-items: center;
@@ -29958,6 +29965,14 @@
         color: rgba(244, 244, 245, 0.92);
         background: rgba(122, 60, 255, 0.28);
         border: 1px solid rgba(255, 255, 255, 0.14);
+      }
+      .scene-watch-dest-scene-card-badge--tag {
+        text-transform: none;
+        letter-spacing: 0.02em;
+        font-weight: 600;
+        color: rgba(244, 244, 245, 0.82);
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
       }
       .scene-watch-dest-scene-card-actions {
         position: relative;
@@ -31009,7 +31024,18 @@
       }
       .scene-watch-dest-mobile-qr {
         display: flex;
-        flex: 0 0 72px;
+        flex-direction: column;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 5px;
+        width: 72px;
+        box-sizing: border-box;
+        background: transparent;
+        overflow: visible;
+      }
+      .scene-watch-dest-mobile-qr-frame {
+        display: flex;
         align-items: center;
         justify-content: center;
         width: 72px;
@@ -31029,6 +31055,15 @@
         max-height: 64px !important;
         aspect-ratio: 1 / 1;
         object-fit: contain;
+      }
+      .scene-watch-dest-mobile-qr-label {
+        font-size: 0.62rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(244, 244, 245, 0.72);
+        line-height: 1;
+        user-select: none;
       }
       body.client-phone .scene-watch-dest-jump-in-pair {
         flex-direction: column;

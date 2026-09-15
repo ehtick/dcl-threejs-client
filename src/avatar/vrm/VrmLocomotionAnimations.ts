@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { VRM } from '@pixiv/three-vrm'
-import type { AvatarLocomotionState } from '../AvatarAnimations'
+import { AVATAR_ANIM_PRIME_DELTA, type AvatarLocomotionState } from '../AvatarAnimations'
 import { DoubleJumpTwirl } from '../doubleJumpTwirl'
 import type { EmotePropAttachment } from '../emotePlayback'
 import { DCL_LOCOMOTION_DEFAULTS } from '../../player/locomotion'
@@ -93,7 +93,7 @@ export class VrmLocomotionAnimations {
       this.fallAction.play()
     }
 
-    this.mixer.update(0)
+    this.mixer.update(AVATAR_ANIM_PRIME_DELTA)
   }
 
   /**

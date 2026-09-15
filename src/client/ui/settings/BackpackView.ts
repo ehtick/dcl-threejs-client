@@ -85,6 +85,7 @@ import {
   unequipEmoteFromProfile
 } from './profileEmoteEquip'
 import { getSessionAssetCache } from '../../../rendering/AssetCache'
+import { enableDrawLayers } from '../../../rendering/drawLayers'
 import {
   guessWearableRarity,
   parseCollectionsV2WearableUrn,
@@ -2934,13 +2935,18 @@ export class BackpackView {
     this.scene = new THREE.Scene()
     this.camera = new THREE.PerspectiveCamera(28, 1, 0.1, 50)
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.72))
+    const ambient = new THREE.AmbientLight(0xffffff, 0.72)
+    this.scene.add(ambient)
     const key = new THREE.DirectionalLight(0xffffff, 1.15)
     key.position.set(2.5, 4.5, 3.5)
     this.scene.add(key)
     const rim = new THREE.DirectionalLight(0xc9a0ff, 0.45)
     rim.position.set(-3, 2, -2)
     this.scene.add(rim)
+    enableDrawLayers(this.camera)
+    enableDrawLayers(ambient)
+    enableDrawLayers(key)
+    enableDrawLayers(rim)
 
     const platformGeo = new THREE.CircleGeometry(0.72, 64)
     const platformMat = new THREE.MeshStandardMaterial({

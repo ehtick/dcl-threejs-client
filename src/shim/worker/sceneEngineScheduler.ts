@@ -254,6 +254,15 @@ export function shouldAttachUiMountSnapshot(): boolean {
   return attachUiMountSnapshot
 }
 
+/**
+ * Main projection missing worker-mounted UiTransform — next play emit PUTs every
+ * mount entity (dirty-only LWW cannot restore rows it did not dirty).
+ */
+let pendingUiFullMountPuts = false
+export function requestWorkerUiFullMountPuts(): void {
+  pendingUiFullMountPuts = true
+}
+
 /** Run fn while rpcCrdt may attach uiEntities (pointer UI transport). */
 export async function runWithUiMountSnapshot(fn: () => Promise<void>): Promise<void> {
   attachUiMountSnapshot = true
@@ -536,6 +545,7 @@ function resetPlayUiLwwBaselines(): void {
   lastUiMountSnapshotMountLen = -1
   lastPostedUiDisplayFp = ''
   lastPostedUiMountIds = []
+  pendingUiFullMountPuts = false
 }
 
 function displayFpEntityKey(part: string): string {
@@ -552,6 +562,24 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   // Live play: after react-ecs wrote JSX, PUT dirty Ui* as LWW. Snapshot is hydrate/unmount.
   if (!hydration && !mountEmpty) {
     lastUiMountSnapshotMountLen = mountEntityIds.length
+    if (pendingUiFullMountPuts) {
+      pendingUiFullMountPuts = false
+      const encoded = encodeWorkerSceneUiCrdtOutbound(
+        eng,
+        uiMountIdsFingerprint(lastPostedUiMountIds),
+        undefined
+      )
+      if (encoded?.data.byteLength && cfg.postUiLwwPuts) {
+        cfg.log(
+          `[sceneWorker] ui lww — bytes=${encoded.data.byteLength} entities=all (full mount re-PUT)`
+        )
+        cfg.postUiLwwPuts(encoded.data)
+        lastPostedUiDisplayFp = computeWorkerUiDisplayFp(eng)
+        lastPostedUiMountIds = mountEntityIds.slice()
+        commitSceneUiCrdtBaseline(eng)
+      }
+      return
+    }
     const liveDisplayFp = computeWorkerUiDisplayFp(eng)
     const displayChanged = liveDisplayFp !== lastPostedUiDisplayFp
     const planned = planSceneUiCrdtEmit(eng, cfg.log)

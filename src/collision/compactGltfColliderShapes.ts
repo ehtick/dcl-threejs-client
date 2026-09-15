@@ -72,6 +72,12 @@ function compactClass(kind: 'vis' | 'inv', list: PhysicsColliderShapeDesc[]): Ph
       })
       continue
     }
+    // Physics hulls are rest-pose. Morph flags must match or Three logs
+    // `.morphTargetsRelative must be consistent` and returns null.
+    for (const geo of baked) {
+      geo.morphTargetsRelative = false
+      geo.morphAttributes = {}
+    }
     const merged = mergeGeometries(baked, false)
     for (const geo of baked) geo.dispose()
     if (!merged) {

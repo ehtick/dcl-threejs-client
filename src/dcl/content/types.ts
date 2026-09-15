@@ -330,6 +330,10 @@ export type SceneSkyboxConfigMetadata = {
 
 export type SceneMetadata = {
   display?: { title?: string; description?: string; skybox?: string; skyboxTexture?: string }
+  /** Freeform + category slugs. Official categories live in this array. */
+  tags?: string[]
+  /** Optional extra category list some tooling writes beside `tags`. */
+  categories?: string[]
   policy?: ScenePolicy
   scene?: SceneLayout
   spawnPoints?: SpawnPoint[]

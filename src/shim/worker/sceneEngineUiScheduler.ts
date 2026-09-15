@@ -1,6 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
+import { uiTextContentKey } from '../../ui/scene/uiTextFingerprint'
 import { normalizePointerFilterMode, normalizeYGDisplay, readYGDisplay } from '../../ui/scene/yogaEnums'
 
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
@@ -483,7 +484,7 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
     const text = UiText.getOrNull(entity)
     if (text) {
       const value = text.value ?? ''
-      line += `:tx${value.length}:${value.slice(0, 32)}`
+      line += `:tx${uiTextContentKey(value)}`
     }
     const pointer = PointerEvents.getOrNull(entity)
     const peKey = pointerEventsKey(pointer)
@@ -792,7 +793,7 @@ export function planSceneUiCrdtEmit(
       const prev = prevLines.get(key) ?? ''
       const curr = currLines.get(key) ?? ''
       // Strip text payload; if remainder matches, only UiText value changed.
-      const stripTx = (line: string) => line.replace(/:tx\d+:[^:]*/g, '')
+      const stripTx = (line: string) => line.replace(/:tx\d+:[0-9a-f]*/g, '')
       if (stripTx(prev) !== stripTx(curr)) {
         textOnly = false
         break

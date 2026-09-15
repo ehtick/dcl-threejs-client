@@ -225,15 +225,22 @@ export function applyOutdoorMaterialResponse(
   }
   const metalIn = opts?.metalness ?? material.metalness
   const roughIn = opts?.roughness ?? material.roughness
-  material.metalness = Math.min(1, metalIn * 0.55)
-  material.roughness = Math.min(1, Math.max(0.28, roughIn * 0.82 + 0.2))
+  // Authored shiny (balloons, chrome trim): keep metal/rough. Only soften mid Creator Hub 0.5/0.5.
+  const shiny = roughIn < 0.22 || metalIn > 0.45
+  if (shiny) {
+    material.metalness = Math.min(1, metalIn)
+    material.roughness = Math.min(1, Math.max(0.04, roughIn))
+  } else {
+    material.metalness = Math.min(1, metalIn * 0.55)
+    material.roughness = Math.min(1, Math.max(0.28, roughIn * 0.82 + 0.2))
+  }
   // Allow scene.environment IBL; never pin intensity at 0.
   if (
     material.envMapIntensity === undefined ||
     material.envMapIntensity === 0 ||
     material.envMapIntensity === 1
   ) {
-    material.envMapIntensity = OUTDOOR_ENV_MAP_INTENSITY
+    material.envMapIntensity = shiny ? 0.8 : OUTDOOR_ENV_MAP_INTENSITY
   }
   material.userData.dclOutdoorSoft = true
 }

@@ -1,9 +1,15 @@
 import type { Entity } from '@dcl/ecs'
 import * as THREE from 'three'
-import { AvatarAnimations } from '../avatar/AvatarAnimations'
+import {
+  AvatarAnimations,
+  AVATAR_ANIM_PRIME_DELTA,
+  AVATAR_IDLE_LOCOMOTION
+} from '../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../avatar/AvatarComposer'
-import { disposeWearableInstance } from '../avatar/loadWearable'
-import { AVATAR_YAW_OFFSET, PEER_URL } from '../avatar/constants'
+import { disposeWearableInstance, findBodyShapeRoot } from '../avatar/loadWearable'
+import { applyClipToVisibleSkeletons, remapClipToAvatar } from '../avatar/emoteBoneMap'
+import { getRemappedLocomotionClip } from '../avatar/locomotionClipCache'
+import { AVATAR_EMOTE_IDLE, AVATAR_YAW_OFFSET, PEER_URL } from '../avatar/constants'
 import { catalystEndpointsForRealm } from '../avatar/catalystEndpoints'
 import { createFallbackGuestAvatarProfile } from '../avatar/guestProfile'
 import { guestDisplayNameFromAddress } from '../auth/guestIdentity'
@@ -95,9 +101,9 @@ const NAME_TAG_SETTLED_INTERVAL_MS = 80
  */
 const LOD_NEAR_M2 = 8 * 8
 const LOD_MID_M2 = 20 * 20
-/** Mid band: ~20 Hz pose; anim only if moving / emote / air. */
+/** Mid band: ~20 Hz pose + idle/walk/emote. */
 const LOD_MID_INTERVAL_MS = 50
-/** Far band: ~12 Hz pose; no skinned anim unless emote active. */
+/** Far band: ~12 Hz pose; skinned idle once (not T-pose), then emote-only. */
 const LOD_FAR_INTERVAL_MS = 80
 /**
  * Settled loco-idle (no emote): advance mixer at ~12 Hz.
@@ -150,6 +156,9 @@ type RemotePeerRecord = {
   placeholder: THREE.Group | null
   model: THREE.Object3D | null
   animations: AvatarAnimations | null
+  /** Bundled idle clip sampled onto visible skeletons (no AnimationMixer name lookup). */
+  fallbackIdleClip: THREE.AnimationClip | null
+  fallbackIdlePending: boolean
   vrmAvatar: VrmAvatar | null
   vrmLocomotion: VrmLocomotionAnimations | null
   odkAvatar: OdkAvatar | null
@@ -200,13 +209,38 @@ type RemotePeerRecord = {
   lastLodUpdateAt: number
   /** Last settled-idle mixer tick (performance.now). */
   lastAnimUpdateAt: number
+  /** Last bundled standing-idle sample (performance.now). */
+  lastFallbackIdleAt: number
+  fallbackIdleT0: number
   /** Custom mesh mount attempts (setPeerVrmHash / VRM parse) — max 3 with backoff. */
   customMeshAttempts: number
   customMeshRetryTimer: ReturnType<typeof setTimeout> | null
 }
 
+/** Armature that owns the biggest *visible* skinned mesh — not hidden body basemesh. */
+function pickVisibleIdleRoot(model: THREE.Object3D): THREE.Object3D {
+  const pick: { skel: THREE.Skeleton | null; verts: number } = { skel: null, verts: 0 }
+  model.traverse((obj) => {
+    const mesh = obj as THREE.SkinnedMesh
+    if (!mesh.isSkinnedMesh || !mesh.visible || !mesh.skeleton?.bones.length) return
+    const n = mesh.geometry.getAttribute('position')?.count ?? 0
+    if (n > pick.verts) {
+      pick.verts = n
+      pick.skel = mesh.skeleton
+    }
+  })
+  const bone0 = pick.skel?.bones[0]
+  if (!bone0) return findBodyShapeRoot(model)
+  let node: THREE.Object3D = bone0
+  while (node.parent && (node.parent as THREE.Bone).isBone) node = node.parent
+  return node.parent ?? node
+}
+
 /** Shared extrapolated pose goal (one peer at a time in update). */
 const _extrapGoal = new THREE.Vector3()
+let bundledIdleClipLoad: Promise<THREE.AnimationClip | null> | null = null
+
+
 /** Reused locomotion state — avoid per-peer object alloc every anim tick. */
 const _locoState: {
   horizontalSpeed: number
@@ -1273,6 +1307,8 @@ export class RemoteAvatarManager {
         placeholder: null,
         model: null,
         animations: null,
+        fallbackIdleClip: null,
+        fallbackIdlePending: false,
         vrmAvatar: null,
         vrmLocomotion: null,
         odkAvatar: null,
@@ -1314,6 +1350,8 @@ export class RemoteAvatarManager {
         nameTagWanted: false,
         lastLodUpdateAt: 0,
         lastAnimUpdateAt: 0,
+        lastFallbackIdleAt: 0,
+        fallbackIdleT0: 0,
         customMeshAttempts: 0,
         customMeshRetryTimer: null
       }
@@ -1571,6 +1609,8 @@ export class RemoteAvatarManager {
     }
     // Neon loading shells — idle clip while Catalyst wearables compose.
     updateRemoteAvatarPlaceholders(delta)
+    // Standing DCL remotes: idle mixers tick here so per-peer LOD `continue` cannot skip them.
+    this.tickAllStandingIdles(delta, now)
     let poseSkipped = 0
     let animSkipped = 0
     let nameTagsShown = 0
@@ -1611,7 +1651,6 @@ export class RemoteAvatarManager {
         record.jumpCount > 0 ||
         remoteGlidingEarly ||
         Math.abs(record.verticalVelocity) > 1.5
-      const movingBusy = record.horizontalSpeed > SPEED_IDLE || airBusy || emoteBusy
 
       // Horizontal distance to local player feet (not freecam / orbit camera).
       let dist2 = 0
@@ -1629,19 +1668,27 @@ export class RemoteAvatarManager {
       if (!fullRateCrowd && this.hasLocalPlayerPos && record.hasPosition) {
         if (dist2 > LOD_MID_M2) {
           lodIntervalMs = LOD_FAR_INTERVAL_MS
-          allowAnim = emoteBusy
+          // Far: looping idle is expensive; still sample once so bind T-pose is replaced.
+          allowAnim = emoteBusy || record.lastAnimUpdateAt === 0
           lodBand = 'far'
         } else if (dist2 > LOD_NEAR_M2) {
           lodIntervalMs = LOD_MID_INTERVAL_MS
-          // Mid: skip idle skinning — only animate walk/emote/air.
-          allowAnim = movingBusy
+          // Idle must keep running — skipping mixer left remotes in GLB T-pose
+          // (Three.js no-ops mixer.update(0) on a just-started idle clip).
+          allowAnim = true
           lodBand = 'mid'
         }
       }
-      if (opts?.skipAnim) allowAnim = false
+      const movingForAnim =
+        emoteBusy || airBusy || record.horizontalSpeed > SPEED_IDLE || record.smoothedSpeed > SPEED_IDLE
 
-      // Off-camera: drop skinned mixer unless emote (Focus / look-away from huddle).
-      if (frustumReady && allowAnim && !emoteBusy && record.hasPosition) {
+      // Hitch: skip walk/emote skinning only. Idle must keep playing (GLB rest is T-pose).
+      if (opts?.skipAnim && movingForAnim) {
+        allowAnim = false
+      }
+
+      // Off-camera: skip walk skinning, never skip idle.
+      if (frustumReady && allowAnim && movingForAnim && record.hasPosition) {
         _frustumSphere.center.copy(record.root.position)
         _frustumSphere.center.y += 0.9
         _frustumSphere.radius = FRUSTUM_SKIP_RADIUS_M
@@ -1750,8 +1797,19 @@ export class RemoteAvatarManager {
         }
       }
 
+      const standingIdle =
+        record.renderMode === 'dcl' &&
+        !!record.model &&
+        !emoteBusy &&
+        record.horizontalSpeed < SPEED_IDLE &&
+        record.smoothedSpeed < SPEED_IDLE
+
+      if (!standingIdle && record.renderMode === 'dcl' && record.model && !record.animations?.hasIdleAction()) {
+        void this.bindRemoteDclIdle(record)
+      }
+
       // Near/mid: skinned update. Far: pose only unless emote (looping sits/dances).
-      if (allowAnim) {
+      if (allowAnim && !standingIdle) {
         let emoteActive =
           record.renderMode === 'vrm'
             ? (record.vrmLocomotion?.isProfileEmoteActive() ?? false)
@@ -1929,6 +1987,136 @@ export class RemoteAvatarManager {
       if (!model) continue
       this.setModelCastShadow(model, i < REMOTE_SHADOW_CASTERS)
     }
+  }
+
+  private loadBundledIdleClip(): Promise<THREE.AnimationClip | null> {
+    if (!bundledIdleClipLoad) {
+      const cache = this.assetCache
+      bundledIdleClipLoad = (
+        cache
+          ? cache.load(AVATAR_EMOTE_IDLE, undefined, { emote: true, quiet: true })
+          : Promise.reject(new Error('no cache'))
+      )
+        .then((gltf) => gltf.animations[0] ?? null)
+        .catch(async () => {
+          const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js')
+          const gltf = await new GLTFLoader().loadAsync(AVATAR_EMOTE_IDLE)
+          return gltf.animations[0] ?? null
+        })
+        .catch(() => null)
+    }
+    return bundledIdleClipLoad
+  }
+
+  private async ensureFallbackIdle(record: RemotePeerRecord): Promise<void> {
+    if (record.fallbackIdleClip || record.fallbackIdlePending) return
+    if (!record.model || record.renderMode !== 'dcl') return
+    const model = record.model
+    record.fallbackIdlePending = true
+    try {
+      const src = await this.loadBundledIdleClip()
+      if (!src || record.model !== model) return
+      const idleRoot = pickVisibleIdleRoot(model)
+      const remapped =
+        getRemappedLocomotionClip(src, idleRoot, record.bodyShape, { keepHipBob: true }) ??
+        remapClipToAvatar(src, model) ??
+        remapClipToAvatar(src, idleRoot)
+      if (!remapped?.tracks.length) {
+        clientDebugLog.log(
+          'network',
+          `remote idle remap empty · ${record.identity.displayName} root=${idleRoot.name}`,
+          { level: 'warn' }
+        )
+        return
+      }
+      record.fallbackIdleClip = remapped
+      record.fallbackIdleT0 = performance.now()
+      record.lastFallbackIdleAt = record.fallbackIdleT0
+      const sample = applyClipToVisibleSkeletons(remapped, model, remapped.duration * 0.2)
+      clientDebugLog.log(
+        'network',
+        `remote idle · ${record.identity.displayName} tracks=${remapped.tracks.length} skeletons=${sample.skeletons} bones=${sample.bones}`
+      )
+    } catch (err) {
+      console.warn(`[network] bundled idle failed for ${record.address}`, err)
+    } finally {
+      record.fallbackIdlePending = false
+    }
+  }
+
+  private stopFallbackIdle(record: RemotePeerRecord): void {
+    record.fallbackIdleClip = null
+  }
+
+  /** Tick standing idle outside the per-peer LOD continue (same as neon placeholders). */
+  private tickAllStandingIdles(_delta: number, now: number): void {
+    for (const record of this.peers.values()) {
+      if (record.departing || record.renderMode !== 'dcl' || !record.model) continue
+      const moving =
+        record.horizontalSpeed > SPEED_IDLE ||
+        record.smoothedSpeed > SPEED_IDLE ||
+        !!record.activeEmoteUrn
+      if (moving) {
+        this.stopFallbackIdle(record)
+        continue
+      }
+      if (record.fallbackIdleClip) {
+        if (
+          record.lastFallbackIdleAt > 0 &&
+          now - record.lastFallbackIdleAt < ANIM_SETTLED_INTERVAL_MS
+        ) {
+          continue
+        }
+        const elapsed = (now - (record.fallbackIdleT0 || now)) / 1000
+        applyClipToVisibleSkeletons(record.fallbackIdleClip, record.model, elapsed)
+        record.lastFallbackIdleAt = now
+      } else {
+        void this.ensureFallbackIdle(record)
+      }
+    }
+  }
+
+  /** Locomotion clips after the body is on-screen — never blocks the compose queue. */
+  private async bindRemoteDclIdle(record: RemotePeerRecord): Promise<void> {
+    const model = record.model
+    if (!model || record.renderMode !== 'dcl') return
+    const animations = new AvatarAnimations()
+    record.animations = animations
+    try {
+      await animations.bind(model, record.pivot, {
+        bodyShape: record.bodyShape,
+        peerUrl: this.contentUrl || undefined,
+        assetCache: this.assetCache
+      })
+      if (record.model !== model || record.animations !== animations) {
+        animations.dispose()
+        return
+      }
+      animations.setVfxScene(this.scene)
+      this.primeRemoteIdle(record)
+    } catch (err) {
+      console.warn(`[network] remote emotes failed for ${record.address}`, err)
+      if (record.animations === animations) {
+        animations.dispose()
+        record.animations = null
+      }
+    }
+  }
+
+  /** Sample idle onto the skeleton so a silent/idle peer is not left in GLB T-pose. */
+  private primeRemoteIdle(record: RemotePeerRecord): void {
+    const dt = AVATAR_ANIM_PRIME_DELTA
+    if (record.renderMode === 'vrm') {
+      record.vrmLocomotion?.update(dt, AVATAR_IDLE_LOCOMOTION)
+      record.vrmAvatar?.update(dt)
+    } else if (record.renderMode === 'odk') {
+      record.odkLocomotion?.update(dt, AVATAR_IDLE_LOCOMOTION)
+      record.odkAvatar?.update(dt)
+    } else {
+      record.animations?.update(dt, AVATAR_IDLE_LOCOMOTION)
+      record.animations?.update(dt, AVATAR_IDLE_LOCOMOTION)
+    }
+    record.lastAnimUpdateAt = performance.now()
   }
 
   dispose(): void {
@@ -2214,22 +2402,15 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
-      // Bind locomotion/emote clips on the next frame so first GPU upload isn't stacked with bind.
-      await yieldToIdle(32)
-      if (!this.peers.has(key) || record.model !== composed) return
-
-      record.animations = new AvatarAnimations()
-      try {
-        await record.animations.bind(record.model, record.pivot, {
-          bodyShape: record.bodyShape,
-          peerUrl: this.contentUrl || undefined,
-          assetCache: this.assetCache
+      void this.ensureFallbackIdle(record)
+      if (record.pendingEmote) {
+        void this.bindRemoteDclIdle(record).then(() => {
+          if (record.pendingEmote && record.model === composed) {
+            const pending = record.pendingEmote
+            record.pendingEmote = null
+            void this.applyPeerEmote(record, pending)
+          }
         })
-        record.animations.setVfxScene(this.scene)
-      } catch (err) {
-        console.warn(`[network] remote emotes failed for ${address}`, err)
-        record.animations.dispose()
-        record.animations = null
       }
 
       const { x, y, z } = record.targetPosition
@@ -2238,12 +2419,6 @@ export class RemoteAvatarManager {
         `Remote avatar ready · ${record.identity.displayName} @ x=${x.toFixed(1)} y=${y.toFixed(1)} z=${z.toFixed(1)}`,
         { level: 'success' }
       )
-
-      if (record.pendingEmote) {
-        const pending = record.pendingEmote
-        record.pendingEmote = null
-        void this.applyPeerEmote(record, pending)
-      }
       const wallMs = performance.now() - composeT0
       perfNoteComposeMs(wallMs)
       try {
@@ -2315,6 +2490,7 @@ export class RemoteAvatarManager {
           name: record.identity.displayName,
           hash: shortHash(record.vrmContentHash)
         })
+        this.primeRemoteIdle(record)
       } catch (err) {
         console.warn(`[network] remote ODK locomotion failed for ${record.address}`, err)
         record.odkLocomotion.dispose()
@@ -2407,6 +2583,7 @@ export class RemoteAvatarManager {
         applyVrmPivotOffset(record.pivot, vrmAvatar.vrm, vrmAvatar.root)
         await record.vrmLocomotion.bind(vrmAvatar.vrm, vrmAvatar.root)
         prepareCustomAvatarScene(vrmAvatar.root)
+        this.primeRemoteIdle(record)
       } catch (err) {
         console.warn(`[network] remote VRM locomotion failed for ${record.address}`, err)
         record.vrmLocomotion.dispose()
@@ -2589,6 +2766,7 @@ export class RemoteAvatarManager {
     // GliderProp is a pivot child — survives body swaps; disposed only on removePeer.
     record.animations?.dispose()
     record.animations = null
+    this.stopFallbackIdle(record)
     record.vrmLocomotion?.dispose()
     record.vrmLocomotion = null
     record.odkLocomotion?.dispose()

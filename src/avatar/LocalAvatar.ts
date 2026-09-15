@@ -1,5 +1,10 @@
 import * as THREE from 'three'
-import { AvatarAnimations, type AvatarLocomotionState } from './AvatarAnimations'
+import {
+  AvatarAnimations,
+  AVATAR_ANIM_PRIME_DELTA,
+  AVATAR_IDLE_LOCOMOTION,
+  type AvatarLocomotionState
+} from './AvatarAnimations'
 import { composeAvatarFromProfile } from './AvatarComposer'
 import { disposeWearableInstance } from './loadWearable'
 import { AVATAR_YAW_OFFSET, PEER_URL, PROFILE_STORAGE_KEY } from './constants'
@@ -127,6 +132,8 @@ export class LocalAvatar {
               try {
                 await this.odkLocomotion.bind(this.odkAvatar.root)
                 this.odkLocomotion.setOnOneShotFinished(this.onOneShotEmoteFinished)
+                this.odkLocomotion.update(AVATAR_ANIM_PRIME_DELTA, AVATAR_IDLE_LOCOMOTION)
+                this.odkAvatar.update(AVATAR_ANIM_PRIME_DELTA)
                 console.info('[avatar] custom ODK/MML avatar equipped — locomotion active')
               } catch (err) {
                 console.warn('[avatar] ODK locomotion bind failed — bind pose only', err)
@@ -150,6 +157,8 @@ export class LocalAvatar {
               applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
               await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
               this.vrmLocomotion.setOnOneShotFinished(this.onOneShotEmoteFinished)
+              this.vrmLocomotion.update(AVATAR_ANIM_PRIME_DELTA, AVATAR_IDLE_LOCOMOTION)
+              this.vrmAvatar.update(AVATAR_ANIM_PRIME_DELTA)
               prepareCustomAvatarScene(this.model)
               console.info('[avatar] custom VRM equipped — locomotion active')
             } catch (err) {
@@ -213,6 +222,7 @@ export class LocalAvatar {
       if (this.vfxScene) {
         this.animations.setVfxScene(this.vfxScene)
       }
+      this.animations.update(AVATAR_ANIM_PRIME_DELTA, AVATAR_IDLE_LOCOMOTION)
       applyAvatarPivotOffset(this.pivot, this.model)
     } catch (err) {
       console.warn('[avatar] idle emote failed — avatar stays in bind pose', err)

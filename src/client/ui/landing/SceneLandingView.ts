@@ -14,6 +14,7 @@ import {
   sceneLandingKindLabel,
   type SceneLandingMeta
 } from '../../../social/sceneLanding'
+import { formatLandingUpdatedAt } from '../../../dcl/content/sceneDisplayMeta'
 import {
   fetchSceneCompositeVideos,
   isPlayableLandingMediaUrl,
@@ -1640,16 +1641,32 @@ export class SceneLandingView {
       meta.userCount > 0
         ? `<button type="button" class="scene-watch-dest-scene-card-in-world" data-scene-crowd aria-label="${meta.userCount} people ${inWorldLabel} — view list">${meta.userCount} ${inWorldLabel}</button>`
         : ''
-    const categories = meta.categories
+    const categoryChips = meta.categories
       .slice(0, 4)
       .map(
         (c) =>
           `<span class="scene-watch-dest-scene-card-badge">${escapeHtml(c.replace(/_/g, ' '))}</span>`
       )
-      .join('')
+    const categoryKeys = new Set(meta.categories.map((c) => c.toLowerCase()))
+    const tagChips = meta.tags
+      .filter((t) => !categoryKeys.has(t.toLowerCase()))
+      .slice(0, 6)
+      .map(
+        (t) =>
+          `<span class="scene-watch-dest-scene-card-badge scene-watch-dest-scene-card-badge--tag">${escapeHtml(t.replace(/_/g, ' '))}</span>`
+      )
+    const badges = [...categoryChips, ...tagChips].join('')
     const desc =
       meta.description.trim().length > 0
         ? `<p class="scene-watch-dest-scene-card-desc">${escapeHtml(meta.description)}</p>`
+        : ''
+    const updatedAtMs = meta.updatedAtMs
+    const updated =
+      typeof updatedAtMs === 'number' && Number.isFinite(updatedAtMs) && updatedAtMs > 0
+        ? (() => {
+            const fmt = formatLandingUpdatedAt(updatedAtMs)
+            return `<p class="scene-watch-dest-scene-card-updated" title="${escapeHtml(fmt.title)}">Last updated ${escapeHtml(fmt.label)}</p>`
+          })()
         : ''
     const ownerInitial = meta.ownerDisplayName.trim().charAt(0).toUpperCase() || '?'
 
@@ -1742,6 +1759,7 @@ export class SceneLandingView {
                             ${kindLabel} · <span>${escapeHtml(meta.pointerLabel)}</span>
                           </p>
                           ${desc}
+                          ${updated}
                           <div class="scene-watch-dest-scene-card-creator">
                             <span class="scene-watch-dest-scene-card-avatar" data-owner-avatar aria-hidden>${escapeHtml(ownerInitial)}</span>
                             <div>
@@ -1749,7 +1767,7 @@ export class SceneLandingView {
                               <span class="scene-watch-dest-scene-card-creator-name">${escapeHtml(meta.ownerDisplayName)}</span>
                             </div>
                           </div>
-                          ${categories ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories">${categories}</div>` : ''}
+                          ${badges ? `<div class="scene-watch-dest-scene-card-badges" aria-label="Categories and tags">${badges}</div>` : ''}
                           <div class="scene-watch-dest-scene-card-actions">
                             <div class="scene-watch-dest-scene-card-cta-row">
                               <div class="scene-watch-join-live-split" data-join-live-root ${this.joinLiveOptions.length > 0 ? '' : 'hidden'}>
@@ -1798,12 +1816,15 @@ export class SceneLandingView {
                                   hidden
                                   title="Scan to open in the Decentraland mobile app"
                                 >
-                                  <img
-                                    data-mobile-qr-img
-                                    alt="QR code to open this place in the Decentraland mobile app"
-                                    width="72"
-                                    height="72"
-                                  />
+                                  <div class="scene-watch-dest-mobile-qr-frame">
+                                    <img
+                                      data-mobile-qr-img
+                                      alt="QR code to open this place in the Decentraland mobile app"
+                                      width="72"
+                                      height="72"
+                                    />
+                                  </div>
+                                  <span class="scene-watch-dest-mobile-qr-label">Mobile</span>
                                 </div>
                               </div>
                             </div>

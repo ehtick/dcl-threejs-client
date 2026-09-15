@@ -106,12 +106,13 @@ function simplifyMaterial(material: THREE.Material): THREE.Material {
       }
     }
     if (material.transparent && material.opacity < 0.95) material.depthWrite = false
+    else if (material.transparent && material.opacity >= 0.95) material.depthWrite = true
     // KHR_materials_specular volumes (Rituals fog): authored metal/rough/spec/IBL are law.
     // Outdoor remap crushed envMapIntensity and hid zenith/horizon color in the sheen.
     if (!isSceneNeonEmissiveMaterial(material) && !hasAuthoredKhrSpecular(material)) {
       applyOutdoorMaterialResponse(material)
     }
-    return material
+    return applyVegetationTwoSided(material)
   }
   if (material instanceof THREE.MeshStandardMaterial) {
     stripOptionalMaps(material)
@@ -119,7 +120,7 @@ function simplifyMaterial(material: THREE.Material): THREE.Material {
     if (!isSceneNeonEmissiveMaterial(material)) {
       applyOutdoorMaterialResponse(material)
     }
-    return material
+    return applyVegetationTwoSided(material)
   }
   if (material instanceof THREE.MeshBasicMaterial) {
     return material
@@ -278,6 +279,44 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
   })
 }
 
+/** Unity vegetation is Cull Off — FrontSide leaves hollow Tripo/hedge shells see-through. */
+const VEGETATION_MAT_NAME = /hedge|grass|foliage|leaf|leaves|bush|plant|ivy|moss|shrub/i
+
+function isVegetationMaterial(material: THREE.Material): boolean {
+  return VEGETATION_MAT_NAME.test(material.name ?? '')
+}
+
+/**
+ * Explorer hedges read as even albedo on both sides. PBR/Lambert DoubleSide still
+ * leaves the shaded shell black. Unlit two-sided keeps the grass texture visible.
+ */
+function applyVegetationTwoSided(material: THREE.Material): THREE.Material {
+  if (!isVegetationMaterial(material)) return material
+  if (material.userData.dclVegetationUnlit === true) {
+    material.side = THREE.DoubleSide
+    material.depthWrite = true
+    return material
+  }
+  const std = material as THREE.MeshStandardMaterial
+  const basic = new THREE.MeshBasicMaterial({
+    name: material.name,
+    color: std.color?.clone() ?? new THREE.Color(0xffffff),
+    map: std.map ?? null,
+    alphaMap: std.alphaMap ?? null,
+    transparent: material.transparent,
+    opacity: material.opacity,
+    alphaTest: material.alphaTest,
+    depthWrite: true,
+    depthTest: true,
+    side: THREE.DoubleSide,
+    fog: true,
+    vertexColors: std.vertexColors === true
+  })
+  basic.userData = { ...material.userData, dclVegetationUnlit: true, dclVegetationTwoSided: true }
+  basic.needsUpdate = true
+  return basic
+}
+
 function isStandardLike(
   material: THREE.Material
 ): material is THREE.MeshStandardMaterial | THREE.MeshBasicMaterial | THREE.MeshLambertMaterial {
@@ -310,32 +349,44 @@ function honorGltfAuthoredAlpha(material: THREE.Material): void {
       : material.alphaTest
   const mode = material.userData.gltfAlphaMode as string | undefined
   const isMask = mode === 'MASK' || (typeof cutoff === 'number' && cutoff > 0)
-  if (!isMask) return
-  if (mode) material.userData.gltfAlphaMode = mode
-  material.userData.gltfAlphaCutoff = cutoff
-  material.alphaTest = cutoff
-  material.transparent = false
-  const std = material as THREE.MeshStandardMaterial
-  const hasCutoutMap = !!(std.map || std.alphaMap)
-  if (hasCutoutMap) {
-    material.opacity = 1
-  } else if (/^invis$/i.test(material.name) && material.opacity >= 1 - 1e-4) {
-    // Creator Hub click hull: previous sanitize forced opacity 1 on cached MASK.
-    material.opacity = 0
+  if (isMask) {
+    if (mode) material.userData.gltfAlphaMode = mode
+    material.userData.gltfAlphaCutoff = cutoff
+    material.alphaTest = cutoff
+    material.transparent = false
+    const std = material as THREE.MeshStandardMaterial
+    const hasCutoutMap = !!(std.map || std.alphaMap)
+    if (hasCutoutMap) {
+      material.opacity = 1
+    } else if (/^invis$/i.test(material.name) && material.opacity >= 1 - 1e-4) {
+      // Creator Hub click hull: previous sanitize forced opacity 1 on cached MASK.
+      material.opacity = 0
+    }
+    material.depthWrite = true
+    material.needsUpdate = true
+    return
   }
-  material.depthWrite = true
-  material.needsUpdate = true
+  // glTF BLEND: Explorer still occludes when the surface is nearly opaque
+  // (hedge volumes, flags). Only true fade volumes keep depthWrite off.
+  if (material.transparent && material.opacity >= 0.95) {
+    material.depthWrite = true
+    material.needsUpdate = true
+  }
 }
 
 /** Landscape tree cards — re-assert authored MASK only (no name heuristic). */
-export function tuneLandscapeFoliageMaterial(material: THREE.Material, _meshName = ''): void {
+export function tuneLandscapeFoliageMaterial(material: THREE.Material, _meshName = ''): THREE.Material {
   honorGltfAuthoredAlpha(material)
+  return applyVegetationTwoSided(material)
 }
 
 function tuneScenePlantCutoutMaterial(mesh: THREE.Mesh): void {
-  for (const material of meshMaterials(mesh)) {
+  const next = meshMaterials(mesh).map((material) => {
     honorGltfAuthoredAlpha(material)
-  }
+    return applyVegetationTwoSided(material)
+  })
+  if (next.length === 1) mesh.material = next[0]!
+  else if (next.length > 1) mesh.material = next
 }
 
 /** Re-assert authored glTF MASK after clone / hydration (shared materials). */
@@ -369,9 +420,9 @@ export function sanitizeLandscapeGltf(root: THREE.Object3D): void {
     obj.receiveShadow = true
 
     if (Array.isArray(obj.material)) {
-      obj.material.forEach((m) => tuneLandscapeFoliageMaterial(m, obj.name))
+      obj.material = obj.material.map((m) => tuneLandscapeFoliageMaterial(m, obj.name))
     } else {
-      tuneLandscapeFoliageMaterial(obj.material, obj.name)
+      obj.material = tuneLandscapeFoliageMaterial(obj.material, obj.name)
     }
   })
 }

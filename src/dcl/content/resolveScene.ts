@@ -9,6 +9,11 @@ import { resolveNameTagsVisible } from './resolveNameTags'
 import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableExperiences'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
 import {
+  deployedAtMsFromEntity,
+  descriptionFromSceneMetadata,
+  tagsAndCategoriesFromSceneMetadata
+} from './sceneDisplayMeta'
+import {
   catalystContentAssetUrl,
   catalystRootFromContentUrl,
   fetchSceneEntityById,
@@ -409,17 +414,40 @@ export type WorldDeployDisplayMeta = {
   description: string
   imageUrl: string | null
   contentServerBase: string
+  tags: string[]
+  categories: string[]
+  /** Entity deployment timestamp (ms). */
+  deployedAtMs: number | null
+}
+
+function worldNameFetchCandidates(worldName: string): string[] {
+  const n = worldName.trim()
+  if (!n) return []
+  const short = n.replace(/\.dcl\.eth$/i, '').trim() || n
+  const dotted = `${short}.dcl.eth`
+  const out: string[] = []
+  const add = (v: string) => {
+    if (v && !out.some((x) => x.toLowerCase() === v.toLowerCase())) out.push(v)
+  }
+  add(n)
+  add(dotted)
+  add(short)
+  return out
 }
 
 /**
- * Title / description / thumbnail from the worlds content server entity
- * (not Places API). Used for custom-realm landing so we never show DCL catalog data.
+ * Title / description / tags / thumbnail from the worlds content server entity
+ * (not Places API). Used for world landing so scene.json is the source of truth.
  */
 export async function fetchWorldDeployDisplayMeta(
   worldName: string,
   customServer?: string | null
 ): Promise<WorldDeployDisplayMeta | null> {
-  const result = await fetchWorldEntity(worldName, customServer)
+  let result: Awaited<ReturnType<typeof fetchWorldEntity>> = null
+  for (const name of worldNameFetchCandidates(worldName)) {
+    result = await fetchWorldEntity(name, customServer)
+    if (result) break
+  }
   if (!result) return null
   const metadata = (result.entity.metadata ?? {}) as Record<string, unknown>
   const display =
@@ -427,10 +455,8 @@ export async function fetchWorldDeployDisplayMeta(
       ? (metadata.display as Record<string, unknown>)
       : {}
   const title = displayTitleFromEntity(result.entity)
-  const description =
-    (typeof display.description === 'string' && display.description.trim()) ||
-    (typeof metadata.description === 'string' && metadata.description.trim()) ||
-    ''
+  const description = descriptionFromSceneMetadata(metadata)
+  const { tags, categories } = tagsAndCategoriesFromSceneMetadata(metadata)
 
   const content = parseContent(result.entity.content)
   const assetUrl = (hash: string) => `${result.contentsRoot}/${encodeURIComponent(hash)}`
@@ -455,7 +481,10 @@ export async function fetchWorldDeployDisplayMeta(
     title,
     description,
     imageUrl,
-    contentServerBase: result.contentServerBase
+    contentServerBase: result.contentServerBase,
+    tags,
+    categories,
+    deployedAtMs: deployedAtMsFromEntity(result.entity)
   }
 }
 

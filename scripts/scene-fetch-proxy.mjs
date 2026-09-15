@@ -67,6 +67,9 @@ export function createSceneFetchProxyMiddleware() {
         headers['user-agent'] =
           'Mozilla/5.0 (compatible; ThreejsClient scene-http proxy)'
       }
+      // Node fetch decompresses gzip. Ask for identity so upstream Content-Length
+      // cannot describe compressed bytes we no longer have.
+      headers['accept-encoding'] = 'identity'
 
       /** @type {Buffer | undefined} */
       let body
@@ -85,12 +88,21 @@ export function createSceneFetchProxyMiddleware() {
       res.statusCode = upstream.status
       for (const [key, value] of upstream.headers.entries()) {
         const lower = key.toLowerCase()
+        // Node fetch already decompresses. Forwarding compressed Content-Length
+        // truncates the uncompressed body (Drop Party /network-admission ~370B
+        // gzip size vs full JSON → jsonOk=false → ADMISSION_HTTP_ERROR 200).
         if (lower === 'transfer-encoding' || lower === 'connection') continue
-        if (lower === 'content-encoding') continue
+        if (lower === 'content-encoding' || lower === 'content-length') continue
         res.setHeader(key, value)
       }
       res.setHeader('Access-Control-Allow-Origin', '*')
       const buf = Buffer.from(await upstream.arrayBuffer())
+      res.setHeader('Content-Length', String(buf.length))
+      if (/convex\.site|network-admission/i.test(target)) {
+        console.warn(
+          `[scene-http] ${req.method} ${target} → ${upstream.status} bytes=${buf.length}`
+        )
+      }
       res.end(buf)
     } catch (err) {
       res.statusCode = 502

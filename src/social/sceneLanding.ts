@@ -25,14 +25,13 @@ import {
   type DclPlacesWorld
 } from './dclPlaces'
 import { fetchWorldDeployDisplayMeta } from '../dcl/content/resolveScene'
+import {
+  parseIsoToMs,
+  tagsAndCategoriesFromSceneMetadata,
+  uniqueDisplayLabels
+} from '../dcl/content/sceneDisplayMeta'
 import { fetchPublicSceneTitle } from './sceneDisplayTitle'
 import { formatRealmParam } from '../network/worlds/worldsServerConfig'
-
-import {
-  worldsAboutUrl,
-  worldsContentBase,
-  worldsContentsUrl
-} from '../network/worlds/worldsServerConfig'
 import { toSceneHttpProxyUrl } from '../network/sceneHttpProxy'
 /** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
 const MARKETPLACE_SUBGRAPH =
@@ -59,6 +58,10 @@ export type SceneLandingMeta = {
   ownerAddresses: string[]
   ownerDisplayName: string
   categories: string[]
+  /** Freeform scene.json tags (category slugs are in `categories`). */
+  tags: string[]
+  /** Last scene deployment time (entity timestamp or Places `deployed_at`). */
+  updatedAtMs: number | null
 }
 
 /** Landing card kind chip: Parcel | World | Custom | Local preview. */
@@ -150,66 +153,6 @@ async function ownerDisplayName(address: string | null, fallback: string): Promi
   return short ?? fallback
 }
 
-function descriptionFromMetadata(meta: Record<string, unknown> | undefined): string {
-  if (!meta) return ''
-  const display = meta.display
-  if (display && typeof display === 'object') {
-    const d = (display as Record<string, unknown>).description
-    if (typeof d === 'string' && d.trim()) return d.trim()
-  }
-  const desc = meta.description
-  if (typeof desc === 'string' && desc.trim()) return desc.trim()
-  return ''
-}
-
-function entityIdFromUrn(urn: string): string | null {
-  const m = /^(?:urn:decentraland:(?:offchain:|)entity:)?(bafy[a-z0-9]+)/i.exec(urn.trim())
-  return m?.[1] ?? null
-}
-
-async function fetchWorldDeploymentDescription(
-  worldName: string,
-  customServer?: string | null
-): Promise<string> {
-  try {
-    const base = worldsContentBase(customServer)
-    const res = await fetch(worldsAboutUrl(base, worldName), {
-      headers: { Accept: 'application/json' }
-    })
-    if (!res.ok) return ''
-    const about = (await res.json()) as { configurations?: { scenesUrn?: string[] } }
-    const urn = about.configurations?.scenesUrn?.[0]
-    if (typeof urn !== 'string') return ''
-    const entityId = entityIdFromUrn(urn)
-    if (!entityId) return ''
-    const entityRes = await fetch(worldsContentsUrl(base, entityId), {
-      headers: { Accept: 'application/json' }
-    })
-    if (!entityRes.ok) return ''
-    const entity = (await entityRes.json()) as { metadata?: Record<string, unknown> }
-    return descriptionFromMetadata(entity.metadata)
-  } catch {
-    return ''
-  }
-}
-
-async function resolveWorldDescription(
-  worldName: string,
-  customServer?: string | null
-): Promise<string> {
-  const short = worldName.replace(/\.dcl\.eth$/i, '').trim() || worldName
-  const dotted = `${short}.dcl.eth`
-  // Official worlds content keys are `name.dcl.eth`. Bare `name` 404s.
-  const candidates = customServer
-    ? [...new Set([worldName, short, dotted])]
-    : [...new Set([dotted, worldName.endsWith('.dcl.eth') ? worldName : dotted])]
-  for (const name of candidates) {
-    const description = await fetchWorldDeploymentDescription(name, customServer)
-    if (description) return description
-  }
-  return ''
-}
-
 function normalizeSceneKey(pointer: string): string {
   return pointer.trim().toLowerCase()
 }
@@ -289,7 +232,9 @@ function localPreviewOfflineMeta(origin: string, detail: string): SceneLandingMe
     ownerAddress: null,
     ownerAddresses: [],
     ownerDisplayName: pointerLabel,
-    categories: []
+    categories: [],
+    tags: [],
+    updatedAtMs: null
   }
 }
 
@@ -302,6 +247,9 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
       const description =
         scene.metadata.display?.description?.trim() ||
         `Preview server at ${pointerLabel}`
+      const display = tagsAndCategoriesFromSceneMetadata(
+        scene.metadata as Record<string, unknown>
+      )
       return {
         title: scene.title?.trim() || 'Local preview',
         description,
@@ -312,7 +260,9 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
         ownerAddress: null,
         ownerAddresses: [],
         ownerDisplayName: pointerLabel,
-        categories: []
+        categories: display.categories,
+        tags: display.tags,
+        updatedAtMs: null
       }
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err)
@@ -354,7 +304,9 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
       ownerAddress: owners.primary,
       ownerAddresses: owners.all,
       ownerDisplayName: ownerDisplay,
-      categories: place?.categories ?? []
+      categories: place?.categories ?? [],
+      tags: [],
+      updatedAtMs: null
     }
   }
 
@@ -368,10 +320,7 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
       deploy?.title?.trim() ||
       (await fetchPublicSceneTitle(route).catch(() => null)) ||
       shortName
-    const description =
-      deploy?.description?.trim() ||
-      (await resolveWorldDescription(route.worldName, customServer)) ||
-      ''
+    const description = deploy?.description?.trim() || ''
     const realmHost = formatRealmParam(customServer) || customServer
     return {
       title,
@@ -386,13 +335,15 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
       ownerAddress: null,
       ownerAddresses: [],
       ownerDisplayName: realmHost,
-      categories: []
+      categories: deploy?.categories ?? [],
+      tags: deploy?.tags ?? [],
+      updatedAtMs: deploy?.deployedAtMs ?? null
     }
   }
 
   // Official worlds: Prefer exact `names=` match so Places owner wallet is reliable.
   const nameCandidates = worldNameSearchCandidates(route.worldName)
-  const [byName, bySearch] = await Promise.all([
+  const [byName, bySearch, deploy, chainOwner] = await Promise.all([
     nameCandidates.length
       ? fetchDclPlacesWorlds({
           names: nameCandidates,
@@ -404,7 +355,9 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
       search: route.worldName,
       limit: 8,
       orderBy: 'most_active'
-    }).catch(() => [] as DclPlacesWorld[])
+    }).catch(() => [] as DclPlacesWorld[]),
+    fetchWorldDeployDisplayMeta(route.worldName, null).catch(() => null),
+    fetchWorldNameOwnerAddress(route.worldName).catch(() => null)
   ])
   const worlds = [...byName]
   for (const w of bySearch) {
@@ -423,7 +376,6 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
     worlds[0]
 
   // Companion discover: Places/deploy owners + marketplace NAME owner (not worlds /about).
-  const chainOwner = await fetchWorldNameOwnerAddress(route.worldName).catch(() => null)
   const owners = collectOwnerAddresses(
     chainOwner,
     world?.creatorAddress,
@@ -431,13 +383,23 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
     world ? placeOwnerAddress(world) : null
   )
   const ownerDisplay = await ownerDisplayName(owners.primary, shortName)
-  const description = await resolveWorldDescription(route.worldName, null)
-  const title = await fetchPublicSceneTitle(route)
+  const title = await fetchPublicSceneTitle(route, deploy?.title)
+  const description = deploy?.description?.trim() || world?.description?.trim() || ''
+  const categories = uniqueDisplayLabels([
+    ...(deploy?.categories ?? []),
+    ...(world?.categories ?? [])
+  ])
+  const categoryKeys = new Set(categories.map((c) => c.toLowerCase()))
+  const tags = uniqueDisplayLabels([...(deploy?.tags ?? []), ...(world?.tags ?? [])]).filter(
+    (t) => !categoryKeys.has(t.toLowerCase())
+  )
+  const updatedAtMs =
+    deploy?.deployedAtMs ?? parseIsoToMs(world?.deployedAt) ?? parseIsoToMs(world?.updatedAt)
 
   return {
     title,
     description,
-    imageUrl: world?.image ?? null,
+    imageUrl: world?.image ?? deploy?.imageUrl ?? null,
     pointerLabel: route.worldName,
     kind: 'world',
     customServer: null,
@@ -445,6 +407,8 @@ export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<S
     ownerAddress: owners.primary,
     ownerAddresses: owners.all,
     ownerDisplayName: ownerDisplay,
-    categories: []
+    categories,
+    tags,
+    updatedAtMs
   }
 }

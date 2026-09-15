@@ -1551,7 +1551,12 @@ export class PointerEventsSystem {
     return best
   }
 
-  /** Map collider entity to the nearest ancestor registered for pointer events. */
+  /**
+   * Map a collider / GLTF hit to the PointerEvents entity.
+   * Ancestor walk: PE on parent, MeshCollider on child (asset-pack).
+   * Sibling click-box: visual Gltf/MeshRenderer next to a MeshCollider+PE child
+   * (`MeshCollider.setBox` volume beside a character GLB).
+   */
   private resolveColliderPointerEntity(entity: Entity): Entity | null {
     if (!this.deps) return null
     const { ecs, view } = this.deps
@@ -1561,10 +1566,29 @@ export class PointerEventsSystem {
       if (this.pointerEntitySet.has(current)) return current
       const parent: Entity | undefined = ecs.Transform.getOrNull(current)?.parent
       if (parent === undefined || parent === Root || parent === Player || parent === Camera) {
-        return null
+        return this.resolveSiblingClickBox(entity)
       }
       current = parent
     }
+  }
+
+  /** Invisible MeshCollider+PE sibling of a visual hit (same parent only). */
+  private resolveSiblingClickBox(entity: Entity): Entity | null {
+    if (!this.deps) return null
+    const { ecs } = this.deps
+    const isVisual = ecs.GltfContainer.has(entity) || ecs.MeshRenderer.has(entity)
+    if (!isVisual) return null
+    const parent = ecs.Transform.getOrNull(entity)?.parent
+    if (parent === undefined) return null
+    const siblings = this.childrenByParent.get(parent)
+    if (!siblings?.length) return null
+    for (const sibling of siblings) {
+      if (sibling === entity) continue
+      if (!this.pointerEntitySet.has(sibling)) continue
+      if (!ecs.MeshCollider.has(sibling)) continue
+      return sibling
+    }
+    return null
   }
 
   /** Walk parent chain — sit triggers often live on a child with MeshCollider only. */

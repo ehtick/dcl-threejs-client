@@ -6,6 +6,8 @@
  *
  * Run: node scripts/test-gltf-collider-class.mjs
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import * as THREE from 'three'
 
 function isGltfInvisibleColliderName(name) {
@@ -34,10 +36,15 @@ function classifyGltfCollisionMesh(mesh, gltfRoot) {
   return 'unnamed'
 }
 
-function gltfMeshContributesPhysics(mesh, gltfRoot, hasVisiblePhysics, hasInvisiblePhysics) {
+function gltfMeshIsSkinnedVisibleArt(mesh, gltfRoot) {
   const skinned = mesh.isSkinnedMesh === true
+  if (!skinned) return false
+  return classifyGltfCollisionMesh(mesh, gltfRoot) !== 'inv'
+}
+
+function gltfMeshContributesPhysics(mesh, gltfRoot, hasVisiblePhysics, hasInvisiblePhysics) {
+  if (gltfMeshIsSkinnedVisibleArt(mesh, gltfRoot)) return false
   const kind = classifyGltfCollisionMesh(mesh, gltfRoot)
-  if (skinned && kind !== 'inv') return false
   if (kind === 'inv') return hasInvisiblePhysics
   return hasVisiblePhysics
 }
@@ -146,6 +153,30 @@ function extractShellLike(gltfRoot) {
   assert(
     'CityTile shell extracts _collider floor + ancestry wall, not vis art',
     hulls.includes('Floor_collider') && hulls.includes('Cube') && !hulls.includes('JRArt_building')
+  )
+}
+
+{
+  const root = new THREE.Group()
+  const body = new THREE.SkinnedMesh(new THREE.BoxGeometry(1, 1, 1))
+  body.name = 'Pete'
+  const hull = makeMesh('Pete_collider')
+  root.add(body)
+  root.add(hull)
+  assert('mixamo body is vis-class', classifyGltfCollisionMesh(body, root) === 'vis')
+  assert('skinned vis art is skipped as a hull/occluder', gltfMeshIsSkinnedVisibleArt(body, root) === true)
+  assert('skinned vis does not cook physics', gltfMeshContributesPhysics(body, root, true, true) === false)
+  assert('_collider sibling still cooks', gltfMeshContributesPhysics(hull, root, false, true) === true)
+  assert('non-skinned vis is not skipped', gltfMeshIsSkinnedVisibleArt(makeMesh('Desk'), root) === false)
+}
+
+{
+  const naming = readFileSync(join(process.cwd(), 'src/collision/gltfColliderNaming.ts'), 'utf8')
+  const pointer = readFileSync(join(process.cwd(), 'src/collision/gltfPointerMeshes.ts'), 'utf8')
+  assert('naming exports gltfMeshIsSkinnedVisibleArt', naming.includes('export function gltfMeshIsSkinnedVisibleArt'))
+  assert(
+    'pointer query skips skinned vis art',
+    pointer.includes('gltfMeshIsSkinnedVisibleArt(node, gltfRoot)')
   )
 }
 

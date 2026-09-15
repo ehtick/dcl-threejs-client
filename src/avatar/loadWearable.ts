@@ -558,6 +558,55 @@ export function syncParallelWearableStates(states: readonly ParallelWearableStat
 }
 
 /**
+ * Copy body idle/walk pose onto every other skinned skeleton under the avatar.
+ * Merge-failed wearables (pumpkin/cape/shield) keep their own rig; if they were
+ * not tagged as parallel, the mixer on `wearable:body_shape` never moved them
+ * and remotes stayed in GLB T-pose.
+ */
+export function driveAllWearableSkeletonsFromBody(avatarRoot: THREE.Object3D): void {
+  const bodyRoot = findBodyShapeRoot(avatarRoot)
+  let bodySkel: THREE.Skeleton | undefined
+  bodyRoot.traverse((obj) => {
+    if (bodySkel) return
+    const mesh = obj as THREE.SkinnedMesh
+    if (mesh.isSkinnedMesh && mesh.skeleton?.bones.length) bodySkel = mesh.skeleton
+  })
+  if (!bodySkel) return
+
+  const extras = collectExtraSkeletons(avatarRoot, bodySkel)
+  if (extras.length === 0) return
+
+  const bodyNames = new Set(bodySkel.bones.map((b) => normalizeBoneName(b.name)))
+  const bodyByName = new Map<string, THREE.Bone>()
+  for (const bone of bodySkel.bones) {
+    bodyByName.set(normalizeBoneName(bone.name), bone)
+  }
+  for (const skel of extras) {
+    for (const wearBone of skel.bones) {
+      const resolved = resolveBoneName(wearBone.name, bodyNames)
+      const body = resolved ? bodyByName.get(resolved) : bodyByName.get(normalizeBoneName(wearBone.name))
+      if (!body || body === wearBone) continue
+      wearBone.position.copy(body.position)
+      wearBone.quaternion.copy(body.quaternion)
+    }
+    skel.update()
+  }
+}
+
+function collectExtraSkeletons(avatarRoot: THREE.Object3D, bodySkel: THREE.Skeleton): THREE.Skeleton[] {
+  const seen = new Set<THREE.Skeleton>([bodySkel])
+  const extras: THREE.Skeleton[] = []
+  avatarRoot.traverse((obj) => {
+    const mesh = obj as THREE.SkinnedMesh
+    if (!mesh.isSkinnedMesh || !mesh.skeleton?.bones.length) return
+    if (seen.has(mesh.skeleton)) return
+    seen.add(mesh.skeleton)
+    extras.push(mesh.skeleton)
+  })
+  return extras
+}
+
+/**
  * Drive parallel wearable skeletons after body animation has been applied.
  * Prefer {@link collectParallelWearableStates} + {@link syncParallelWearableStates} on hot paths.
  */

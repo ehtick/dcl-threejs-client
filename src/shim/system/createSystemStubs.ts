@@ -12,6 +12,7 @@ import type {
   SetCameraTransformRequest,
   SetCameraTransformResponse
 } from '../../player/setCameraTransform'
+import { normalizeFlatFetchResponse } from '../signedFetchResponse'
 import type { CommsRpcHandler, SceneWorkerBoot, SignedFetchGetHeadersResponse, SignedFetchRequest, SignedFetchResponse } from '../types'
 import type { EngineApiEventState } from '../engine/EngineApiEventState'
 
@@ -155,7 +156,28 @@ export function createSystemStubs(
       }
     },
     '~system/SignedFetch': {
-      signedFetch: async (body: SignedFetchRequest) => rpc.signedFetch(body),
+      signedFetch: async (body: SignedFetchRequest) => {
+        const res = normalizeFlatFetchResponse(await rpc.signedFetch(body))
+        const url = typeof body?.url === 'string' ? body.url : ''
+        if (url.includes('network-admission')) {
+          let jsonOk = false
+          try {
+            JSON.parse(res.body || '{}')
+            jsonOk = true
+          } catch {
+            jsonOk = false
+          }
+          const log = (globalThis as { __THREEJS_WORKER_LOG__?: (m: string) => void })
+            .__THREEJS_WORKER_LOG__
+          const line =
+            `[SignedFetch] scene ← ok=${res.ok} status=${res.status} ` +
+            `bodyLen=${res.body.length} json=${jsonOk} head=${JSON.stringify(res.body.slice(0, 80))}` +
+            (jsonOk ? '' : ` tail=${JSON.stringify(res.body.slice(-40))}`)
+          if (log) log(line)
+          else console.warn(line)
+        }
+        return res
+      },
       getHeaders: async (body: SignedFetchRequest) => rpc.signedFetchGetHeaders(body)
     },
     '~system/UserActionModule': {

@@ -9,7 +9,7 @@ import {
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
-import { ColliderLayer, hasColliderLayer, resolveCollisionMask } from './ColliderLayer'
+import { ColliderLayer, hasColliderLayer, resolveMeshColliderCollisionMask } from './ColliderLayer'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 import { colliderPoseFp } from './GltfColliderExtractor'
 
@@ -100,7 +100,7 @@ export class CollisionSystem {
     if (!visual) return
 
     const spec = MeshCollider.get(entity)
-    const collisionMask = resolveCollisionMask(spec.collisionMask)
+    const collisionMask = resolveMeshColliderCollisionMask(spec.collisionMask)
     if (collisionMask === ColliderLayer.CL_NONE) {
       this.removeColliderEntity(entity)
       return

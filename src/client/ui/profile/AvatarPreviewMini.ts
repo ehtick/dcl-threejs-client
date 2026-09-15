@@ -1,6 +1,10 @@
 import * as THREE from 'three'
 import { alignPreviewAvatarToGround } from '../../../avatar/avatarPreviewAlign'
-import { AvatarAnimations, type AvatarLocomotionState } from '../../../avatar/AvatarAnimations'
+import {
+  AvatarAnimations,
+  AVATAR_ANIM_PRIME_DELTA,
+  type AvatarLocomotionState
+} from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
 import { prepareAvatarMaterials } from '../../../avatar/materials'
@@ -181,7 +185,7 @@ export class AvatarPreviewMini {
           return
         }
         this.animations = animations
-        animations.update(0, PREVIEW_LOCOMOTION)
+        animations.update(AVATAR_ANIM_PRIME_DELTA, PREVIEW_LOCOMOTION)
         return
       } catch (err) {
         animations.dispose()

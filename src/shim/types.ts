@@ -435,6 +435,11 @@ export type MainToWorker =
   /** Main: player pressed WASD/Space while mode-only sit freeze stuck — clear worker IM. */
   | { type: 'force-locomotion-clear'; reason?: string }
   | { type: 'pump-scene-engine-tick' }
+  /**
+   * Projection is missing UiTransform for a worker-mounted UI entity.
+   * Worker re-PUTs the full mount LWW (play path is dirty-only otherwise).
+   */
+  | { type: 'request-ui-full-mount' }
   /** Main: MainCamera bound but VC Transform/VirtualCamera still missing — one-shot hydrate pull. */
   | { type: 'request-vc-bind-hydrate' }
   /**

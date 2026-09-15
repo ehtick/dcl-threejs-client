@@ -1,7 +1,11 @@
 import type { Entity } from '@dcl/ecs'
 import * as THREE from 'three'
 import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
-import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
+import {
+  gltfMeshIsSkinnedVisibleArt,
+  isGltfInvisibleColliderMesh,
+  isGltfVisibleClassMesh
+} from './gltfColliderNaming'
 
 export type GltfCollisionMaskSource = {
   visibleMeshesCollisionMask?: number
@@ -85,6 +89,8 @@ export function collectGltfLayerTargetMeshes(
       out.push(node)
       return
     }
+    // Same law as PhysX: skinned vis art is not a pointer hull / occluder.
+    if (gltfMeshIsSkinnedVisibleArt(node, gltfRoot)) return
     if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
       if (!includeInvisible) return
     } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
@@ -124,6 +130,7 @@ export function collectGltfPointerTargetMeshes(
 
   gltfRoot.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
+    if (gltfMeshIsSkinnedVisibleArt(node, gltfRoot)) return
     // Ancestry-first: children of `*_collider` groups are invisible-class (Explorer).
     if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
       if (!invisiblePointer) return

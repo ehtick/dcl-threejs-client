@@ -24,7 +24,10 @@ import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
 import { yieldToIdle } from '../rendering/mainThreadYield'
-import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
+import {
+  stabilizeSkinnedMeshes,
+  unifySkinnedMeshesToPrimarySkeleton
+} from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import { isAppleTouchDevice } from '../util/appleTouch'
 import type {
@@ -182,7 +185,12 @@ async function composeFromConfig(
       // Same merge path on Apple touch as desktop — no head-slot skip.
       const quality = probeWearableMergeQuality(entry.layer, skeleton, mergeOpts)
       const threshold = mergeThreshold(mergeOpts)
-      const tryMerge = quality >= threshold || isFeet
+      const bodySlot =
+        category === 'upper_body' ||
+        category === 'lower_body' ||
+        category === 'feet' ||
+        category === 'hands_wear'
+      const tryMerge = quality >= threshold || isFeet || bodySlot
 
       let merged = false
       if (tryMerge) {
@@ -244,6 +252,7 @@ async function composeFromConfig(
   // After emissives — toon banding skips the matte clamp on boosted materials.
   // Opt-in via Preferences → Graphics → Toon shaders (default off).
   applyAvatarToonShading(avatar)
+  unifySkinnedMeshesToPrimarySkeleton(avatar)
   stabilizeSkinnedMeshes(avatar)
   avatar.traverse((obj) => {
     obj.matrixAutoUpdate = true

@@ -6,7 +6,11 @@ import type {
   SignedFetchRequest,
   SignedFetchResponse
 } from '../shim/types'
+import { normalizeFlatFetchResponse } from '../shim/signedFetchResponse'
 import { toSceneHttpProxyUrl } from './sceneHttpProxy'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
+
+export { normalizeFlatFetchResponse } from '../shim/signedFetchResponse'
 
 const signedHeader = signedHeaderFactory()
 
@@ -239,13 +243,21 @@ function logSignedFetch(
   detail: string,
   extra?: Record<string, unknown>
 ): void {
-  // Always console so Network tab users can correlate without ClientDebugLog filters.
-  // Use warn for auth-critical paths (auth-token / matchmake) so they survive default filters.
   const tag = `[SignedFetch] ${phase} ${detail}`
   const critical =
-    /auth-token|matchmake|colyseus|fishing/i.test(detail) ||
+    /auth-token|matchmake|colyseus|fishing|network-admission/i.test(detail) ||
     (typeof extra?.bodyPreview === 'string' && /auth|token|userName/i.test(extra.bodyPreview))
-  if (phase === 'fail' || critical) console.warn(tag, extra ?? '')
+  const jsonFailed = extra?.jsonOk === false
+  const level = phase === 'fail' || jsonFailed ? 'error' : critical ? 'warn' : 'info'
+  const extraNote =
+    extra && Object.keys(extra).length
+      ? ` ${JSON.stringify(extra).slice(0, 280)}`
+      : ''
+  clientDebugLog.log('network', `${tag}${extraNote}`, {
+    level,
+    alsoConsole: true
+  })
+  if (phase === 'fail' || critical || jsonFailed) console.warn(tag, extra ?? '')
   else console.info(tag, extra ?? '')
 }
 
@@ -311,8 +323,17 @@ export async function performSignedFetch(
       const res = await fetch(proxyUrl, { method, headers, body })
       const text = await res.text()
       if (res.ok) {
+        let jsonOk = false
+        try {
+          JSON.parse(text)
+          jsonOk = true
+        } catch {
+          jsonOk = false
+        }
         logSignedFetch('ok', `proxy ${res.status} ${urlShort}`, {
-          bodyPreview: text.slice(0, 120)
+          bodyPreview: text.slice(0, 120),
+          bodyLen: text.length,
+          jsonOk
         })
       } else if (isExpectedGuestAdminDenied(res.status, request.url, text)) {
         logSignedFetch('ok', `proxy ${res.status} guest-denied ${urlShort}`)
@@ -321,13 +342,12 @@ export async function performSignedFetch(
           bodyPreview: text.slice(0, 240)
         })
       }
-      return {
-        ok: res.ok,
+      return normalizeFlatFetchResponse({
         status: res.status,
         statusText: res.statusText,
         body: text,
         headers: headersRecordFromResponse(res)
-      }
+      })
     }
 
     const fetchInit: RequestInit = {
@@ -353,22 +373,20 @@ export async function performSignedFetch(
     } else {
       logSignedFetch('fail', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 240) })
     }
-    return {
-      ok: res.ok,
+    return normalizeFlatFetchResponse({
       status: res.status,
       statusText: res.statusText,
       body: text,
       headers: headersRecordFromResponse(res)
-    }
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logSignedFetch('fail', `${urlShort}`, { error: message })
-    return {
-      ok: false,
+    return normalizeFlatFetchResponse({
       status: 0,
       statusText: message,
       body: '',
       headers: {}
-    }
+    })
   }
 }

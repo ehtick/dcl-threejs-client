@@ -71,6 +71,12 @@ export type DclPlacesWorld = {
   isLive: boolean
   /** Present for localStorage custom-server favourites (not Places API). */
   customServer?: string | null
+  description?: string
+  categories?: string[]
+  tags?: string[]
+  /** Places `deployed_at` (last scene publish). */
+  deployedAt?: string | null
+  updatedAt?: string | null
 }
 
 export type DclExploreItem =
@@ -253,6 +259,26 @@ function mapWorld(item: unknown): DclPlacesWorld | null {
     typeof ucRaw === 'number' && Number.isFinite(ucRaw) ? Math.max(0, Math.floor(ucRaw)) : 0
   const ownerRaw = typeof o.owner === 'string' ? o.owner.trim() : ''
   const creatorRaw = typeof o.creator_address === 'string' ? o.creator_address.trim() : ''
+  const description =
+    typeof o.description === 'string' && o.description.trim() ? o.description.trim() : ''
+  const categories = Array.isArray(o.categories)
+    ? o.categories.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
+    : []
+  const tags = Array.isArray(o.tags)
+    ? o.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : []
+  const deployedAt =
+    typeof o.deployed_at === 'string' && o.deployed_at.trim()
+      ? o.deployed_at.trim()
+      : typeof o.deployedAt === 'string' && o.deployedAt.trim()
+        ? o.deployedAt.trim()
+        : null
+  const updatedAt =
+    typeof o.updated_at === 'string' && o.updated_at.trim()
+      ? o.updated_at.trim()
+      : typeof o.updatedAt === 'string' && o.updatedAt.trim()
+        ? o.updatedAt.trim()
+        : null
   return {
     id: id || worldName,
     worldName,
@@ -263,7 +289,12 @@ function mapWorld(item: unknown): DclPlacesWorld | null {
     owner: ownerRaw.length > 0 ? ownerRaw : null,
     creatorAddress: creatorRaw.length > 0 ? creatorRaw : null,
     highlighted: o.highlighted === true,
-    isLive: userCount > 0
+    isLive: userCount > 0,
+    description,
+    categories,
+    tags,
+    deployedAt,
+    updatedAt
   }
 }
 

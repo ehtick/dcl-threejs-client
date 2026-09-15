@@ -72,16 +72,18 @@ export function syncWireTypeName(type: number): SyncWireTypeName {
 
 /** True when type is full-state RES (serverless or auth-server). */
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
+  /admissionRequest|admissionResult|PLAYER_NOT_READY|NETWORK_LIMIT_REACHED|INVALID_TOKEN|TOKEN_EXPIRED|ADMITTED|balloonSync|employmentAccept|startBlowing|turnInBalloons|teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
 
 export function peekCustomEventName(payload: Uint8Array): string {
-  const n = Math.min(payload.byteLength, 96)
+  const n = Math.min(payload.byteLength, 160)
   let ascii = ''
   for (let i = 0; i < n; i++) {
     const b = payload[i]!
     ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ' '
   }
-  return ascii.match(CUSTOM_EVENT_NAME_RE)?.[0] ?? '?'
+  const matches = ascii.match(new RegExp(CUSTOM_EVENT_NAME_RE.source, 'g'))
+  if (!matches?.length) return '?'
+  return [...new Set(matches)].join('+')
 }
 
 export function isResCrdtStateType(type: number): boolean {

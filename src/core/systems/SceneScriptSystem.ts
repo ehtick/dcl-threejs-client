@@ -515,8 +515,11 @@ export class SceneScriptSystem {
   /**
    * Max wait for UiTransform catch-up before resuming worker ticks anyway.
    * Flagtag: stuck deferred after round-reset wipe left sceneTicksPaused forever → timer dt=0 + freeze.
+   * Does **not** shrink the mount set or paint a subset.
    */
   private static readonly UI_MOUNT_LAG_FORCE_RESUME_MS = 1200
+  private lastUiFullMountRequestAt = 0
+  private static readonly UI_FULL_MOUNT_REQUEST_MIN_MS = 250
   /** Pointer flush requested while a prior inject batch awaits pointer-deliver-done. */
   private pointerFlushCoalesceRequested = false
   /** Non-UI pointer egress held until the atomic uiEntities chunk (one batch apply). */
@@ -2189,14 +2192,13 @@ export class SceneScriptSystem {
   private authServerResyncDone = false
 
   /**
-   * Auth-server scenes (pixelwars paint, Flagtag): SDK sets isRoomReady only when
-   * RES_CRDT_STATE is processed **while** RootEntity RealmInfo exists. If RES wins the
-   * race (stateIsSyncronized=true, isRoomReady still false), joinRoster / paintTick stay
-   * queued forever → no teamAssigned → no Material recolors (crdt-outbound bytes=0).
+   * Auth-server scenes (pixelwars paint, Flagtag, Drop Party): SDK sets isRoomReady
+   * when AUTH_RES is processed while RootEntity RealmInfo exists. Ingress is held
+   * until main() so that race is already closed.
    *
-   * Pulse isConnectedSceneRoom false→true so RealmInfo.onChange re-runs requestState and
-   * a later RES can open the room. Once per worker boot — repeating it during play
-   * re-requests AUTH_RES every interval and rewinds predicted entities.
+   * Do **not** pulse isConnectedSceneRoom false→true after AUTH_RES. SDK onChange(false)
+   * clears isStateSyncronized + isRoomReady; in-flight SignedFetch then cannot send
+   * admissionRequest (Zo stuck "requesting"). Assert connected=true only.
    */
   resyncAuthServerNetworkRoom(): void {
     if (!this.worker || !this.running) return
@@ -2206,12 +2208,6 @@ export class SceneScriptSystem {
 
     const live = this.realmInfoProvider()
     if (!live?.isConnectedSceneRoom) return
-
-    clientDebugLog.log(
-      'sync',
-      'auth-server present — re-pulsing RealmInfo isConnectedSceneRoom for isRoomReady / teamAssigned',
-      { level: 'info', alsoConsole: true }
-    )
 
     const provider = this.realmInfoProvider
     const deliverRealm = (connected: boolean): void => {
@@ -2235,16 +2231,19 @@ export class SceneScriptSystem {
       )
     }
 
-    // Drop connected so SDK clears isRoomReady + stateIsSyncronized.
+    // Never write isConnectedSceneRoom=false after AUTH_RES. SDK onChange(false)
+    // clears isStateSyncronized (cr) and isRoomReady; Drop Party Qc() then hee()
+    // no-ops and Zo stays "requesting" — hire UI / desk highlight never admit.
+    // Ingress is already held until main() + RealmInfo seed, so the old false→true
+    // edge is unnecessary. Assert connected only.
+    clientDebugLog.log(
+      'sync',
+      'auth-server present — assert RealmInfo isConnectedSceneRoom=true (no false pulse)',
+      { level: 'info', alsoConsole: true }
+    )
     this.lastSceneRoomConnected = false
-    deliverRealm(false)
-
-    // Re-assert after worker applies the false pulse (next frames + engine tick).
-    window.setTimeout(() => {
-      this.lastSceneRoomConnected = false
-      deliverRealm(true)
-      this.lastSceneRoomConnected = true
-    }, 120)
+    deliverRealm(true)
+    this.lastSceneRoomConnected = true
   }
 
   /** Sample latest player/camera right before outbound CRDT (avoids stale rotation between sync frames). */
@@ -3105,6 +3104,8 @@ export class SceneScriptSystem {
     for (const item of this.crdtOutboundPending) {
       if (item.motionFolded) continue
       if (item.uiMountSnapshot !== undefined) continue
+      // Worker UI LWW is tagged uiEntities — not Transform/CCT motion.
+      if (item.uiEntities !== undefined) continue
       let data = item.data
       if (!data?.byteLength) continue
       const mayCarryInboundUi = item.uiEntities !== undefined && item.uiMountSnapshot === undefined
@@ -3328,18 +3329,16 @@ export class SceneScriptSystem {
           skipUiMountReseed = true
         }
       }
-      // Integrity only: if mount ids have zero UiTransform, reseed (not a ratio heuristic).
-      if (skipUiMountReseed && latestUiEntities?.length) {
-        let withTx = 0
-        for (const id of latestUiEntities) {
-          if (this.view.components.UiTransform.has(id as Entity)) withTx++
-        }
-        if (withTx === 0) skipUiMountReseed = false
-      }
-      // 15-widget Yoga (BrandonManus timer) is ~30ms — never reseed on a dying rAF.
+      // Worker mount set is authority: every mounted id must have UiTransform on
+      // projection. Missing even one is incomplete — not a ratio heuristic.
+      const mountIncomplete = this.workerMountUiIncomplete(latestUiEntities)
+      if (mountIncomplete) skipUiMountReseed = false
+      // 15-widget Yoga (BrandonManus timer) is ~30ms — skip *paint*, never skip
+      // reseed while projection is missing worker-mounted UiTransform.
       const leftoverDying = this.leftoverBlocksUiPaint()
       if (
         leftoverDying &&
+        !mountIncomplete &&
         (latestUiMountSnapshot === undefined ||
           uiMountSnapshotDisplayFp(latestUiMountSnapshot) === this.lastAppliedUiDisplayFp)
       ) {
@@ -3353,9 +3352,7 @@ export class SceneScriptSystem {
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
       try {
         // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
-        const frozenMountIds = !hasUiMountSnapshot
-          ? this.resolveFrozenWorkerMountIds(latestUiEntities)
-          : null
+        const frozenMountIds = this.resolveFrozenWorkerMountIds(latestUiEntities)
         const foldT0 = performance.now()
         for (const item of batch) {
           if (item.uiMountSnapshot !== undefined) continue
@@ -3537,6 +3534,16 @@ export class SceneScriptSystem {
         }
         if (this.pendingUiEntities !== undefined && (hasUiMountSnapshot || batchTouchesUi)) {
           this.flushUiFrame()
+        }
+        const mountIdsAfter =
+          mountEntitiesForFrame ?? latestUiEntities ?? this.resolveFrozenWorkerMountIds()
+        const ids = mountIdsAfter
+          ? [...mountIdsAfter]
+          : undefined
+        if (this.workerMountUiIncomplete(ids)) {
+          this.requestWorkerUiFullMount(
+            `projection missing UiTransform for worker mount (${ids?.length ?? 0})`
+          )
         }
         split.uiMs += performance.now() - uiPaintT0
       }
@@ -3871,6 +3878,29 @@ export class SceneScriptSystem {
     this.flushUiFrame(uiEntities, opts)
   }
 
+  /** True when any worker-mounted UI entity lacks UiTransform on projection. */
+  private workerMountUiIncomplete(mountIds: readonly number[] | undefined): boolean {
+    if (!mountIds?.length) return false
+    const { UiTransform } = this.readComponents
+    for (const id of mountIds) {
+      if (!UiTransform.has(id as Entity)) return true
+    }
+    return false
+  }
+
+  /**
+   * Worker is UI LWW authority. Play emit is dirty-only — if projection dropped
+   * a mount row, request a full re-PUT of every mounted Ui*.
+   */
+  private requestWorkerUiFullMount(reason: string): void {
+    if (!this.worker || !this.running) return
+    const now = performance.now()
+    if (now - this.lastUiFullMountRequestAt < SceneScriptSystem.UI_FULL_MOUNT_REQUEST_MIN_MS) return
+    this.lastUiFullMountRequestAt = now
+    this.worker.postMessage({ type: 'request-ui-full-mount' } satisfies MainToWorker)
+    clientDebugLog.log('scene-ui', `request worker full UI LWW — ${reason}`)
+  }
+
   /** Committed/pending mount ids — strip DELETE_ENTITY from cooperative non-UI egress on main. */
   private resolveFrozenWorkerMountIds(latestUiEntities?: number[]): ReadonlySet<number> | null {
     const committed = this.sceneUiBridge?.getWorkerUiEntities()
@@ -4061,25 +4091,13 @@ export class SceneScriptSystem {
       }
     }
 
-    // Prefer paint whatever is ready so timer text can still update; else just unstick ticks.
-    if (this.sceneUiBridge && mountSet && withTransform > 0) {
-      const ready = new Set<Entity>()
-      for (const entity of mountSet) {
-        if (ecs.UiTransform.has(entity)) ready.add(entity)
-      }
-      console.warn(
-        `[scene-ui] force partial mount — ready=${ready.size}/${mountSet.size} after ${Math.round(lagMs)}ms lag`
-      )
-      this.pendingUiEntities = undefined
-      this.commitAndPaintUiMount(this.sceneUiBridge, ready)
-      return
-    }
-
+    // Resume ticks only. Never commit a subset of the worker mount (that purges
+    // the missing ids and becomes the new authority). Worker re-PUTs the full set.
     console.warn(
-      `[scene-ui] force resume worker ticks — UiTransform ${withTransform}/${mountSet?.size ?? 0} after ${Math.round(lagMs)}ms lag`
+      `[scene-ui] worker ticks resumed — UiTransform ${withTransform}/${mountSet?.size ?? 0} after ${Math.round(lagMs)}ms (mount set unchanged)`
     )
-    this.pendingUiEntities = undefined
-    this.clearProjectionUiLag()
+    this.projectionLagSinceMs = performance.now()
+    this.requestWorkerUiFullMount(`lag ${withTransform}/${mountSet?.size ?? 0}`)
     this.forceResumeWorkerSceneTicks('ui-mount-lag-timeout')
   }
 

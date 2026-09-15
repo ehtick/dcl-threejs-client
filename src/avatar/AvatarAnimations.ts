@@ -21,6 +21,7 @@ import { remapClipToAvatar } from './emoteBoneMap'
 import { reanchorEmoteHipPositions } from './emoteHipRetarget'
 import {
   collectParallelWearableStates,
+  driveAllWearableSkeletonsFromBody,
   findBodyShapeRoot,
   syncParallelWearableStates,
   type ParallelWearableState
@@ -57,6 +58,30 @@ export type AvatarLocomotionState = {
   moveAxisZ?: number
   /** Capsule target speed for active locomotion mode — stabilizes VRM foot cadence vs raw velocity. */
   targetLocomotionSpeed?: number
+}
+
+/**
+ * Three.js `AnimationAction` no-ops `mixer.update(0)` on a just-started clip
+ * (`timeDiff === 0 && deltaTime === 0` → "yet too early"). Bind must sample
+ * with a positive delta or the skeleton stays GLB T-pose until the next tick.
+ */
+export const AVATAR_ANIM_PRIME_DELTA = 1 / 30
+
+/** Standing still — default after compose / when a remote has not sent motion yet. */
+export const AVATAR_IDLE_LOCOMOTION: AvatarLocomotionState = {
+  horizontalSpeed: 0,
+  grounded: true,
+  nearGround: true,
+  verticalVelocity: 0,
+  locomotionMode: 'jog',
+  jumping: false,
+  doubleJumping: false,
+  doubleJumpTriggered: false,
+  falling: false,
+  gliding: false,
+  moveAxisX: 0,
+  moveAxisZ: 0,
+  targetLocomotionSpeed: 0
 }
 
 /** DCL locomotion emotes retargeted to the composed avatar skeleton (Forge / wearable-preview). */
@@ -118,10 +143,11 @@ export class AvatarAnimations {
     this.dispose()
     const generation = this.bindGeneration
     this.avatarRoot = avatarRoot
-    const animationRoot = findBodyShapeRoot(avatarRoot)
     this.attachParent = attachParent ?? avatarRoot.parent ?? avatarRoot
     this.parallelWearables = collectParallelWearableStates(avatarRoot)
-    this.mixer = new THREE.AnimationMixer(animationRoot)
+    // Mixer on the full composed avatar so idle tracks can bind any Avatar_* bone
+    // in the tree (wearable layers sit beside body_shape, not under it).
+    this.mixer = new THREE.AnimationMixer(avatarRoot)
     this.mixer.addEventListener('finished', this.onMixerFinished)
 
     if (this.vfxScene) {
@@ -197,27 +223,27 @@ export class AvatarAnimations {
 
     // Grounded gaits keep the authored hip bob; air clips stay position-stripped
     // (physics owns vertical travel there and clip offsets would fight the capsule).
-    this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1, { keepHipBob: true })
+    this.idleAction = this.playLoop(idleClip, avatarRoot, bodyShape, 1, { keepHipBob: true })
     if (!this.idleAction) {
       throw new Error('locomotion idle remapped to 0 tracks — avatar stays bind-pose without this')
     }
-    this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0, {
+    this.walkAction = this.playLoop(walkClip ?? undefined, avatarRoot, bodyShape, 0, {
       keepHipBob: true
     })
-    this.jogAction = this.playLoop(jogClip ?? undefined, animationRoot, bodyShape, 0, {
+    this.jogAction = this.playLoop(jogClip ?? undefined, avatarRoot, bodyShape, 0, {
       keepHipBob: true
     })
-    this.runAction = this.playLoop(runClip ?? undefined, animationRoot, bodyShape, 0, {
+    this.runAction = this.playLoop(runClip ?? undefined, avatarRoot, bodyShape, 0, {
       keepHipBob: true
     })
-    this.jumpAction = this.playLoop(jumpClip ?? undefined, animationRoot, bodyShape, 0)
+    this.jumpAction = this.playLoop(jumpClip ?? undefined, avatarRoot, bodyShape, 0)
     this.hasDedicatedDoubleJumpClip = Boolean(doubleJumpClip)
     this.doubleJumpAction = doubleJumpClip
-      ? this.playOneShot(doubleJumpClip, animationRoot, bodyShape)
+      ? this.playOneShot(doubleJumpClip, avatarRoot, bodyShape)
       : null
     // Hold pose (short clip) — clamp last frame while gliding.
     this.glideAction = glideClip
-      ? this.playHold(glideClip, animationRoot, bodyShape)
+      ? this.playHold(glideClip, avatarRoot, bodyShape)
       : null
 
     if (!this.walkAction || !this.runAction || !this.jumpAction || !this.jogAction) {
@@ -235,7 +261,8 @@ export class AvatarAnimations {
       console.warn('[avatar] Glide_Avatar missing — glider uses frozen jump pose')
     }
 
-    this.advancePose(0)
+    this.advancePose(AVATAR_ANIM_PRIME_DELTA)
+    this.advancePose(AVATAR_ANIM_PRIME_DELTA)
   }
 
   triggerDoubleJump(): void {
@@ -498,19 +525,19 @@ export class AvatarAnimations {
     return this.profileActive
   }
 
+  hasIdleAction(): boolean {
+    return !!this.mixer && !!this.idleAction
+  }
+
   /** Apply mixer, then drive any parallel-skeleton wearables from the body pose. */
   private advancePose(delta: number): void {
     this.mixer?.update(delta)
     this.propMixer?.update(delta)
-    if (!this.parallelWearables.length && this.avatarRoot) {
-      this.parallelWearables = collectParallelWearableStates(this.avatarRoot)
-    }
     if (this.parallelWearables.length) {
-      this.avatarRoot?.updateMatrixWorld(true)
       syncParallelWearableStates(this.parallelWearables)
-    } else if (isAppleTouchDevice()) {
-      // iOS: mixer writes bone locals; force world matrices so merged hair skins this frame.
-      this.avatarRoot?.updateMatrixWorld(true)
+    }
+    if (this.avatarRoot) {
+      driveAllWearableSkeletonsFromBody(this.avatarRoot)
     }
     this.maybeLogHeadPose()
   }

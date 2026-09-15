@@ -12,7 +12,8 @@ import {
   dropObsoleteAuthSnapshots,
   resetAuthResCoalesceClock,
   isResCrdtStateType,
-  unwrapCraftedCommsMessage
+  unwrapCraftedCommsMessage,
+  peekCustomEventName
 } from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
@@ -33,6 +34,7 @@ import type {
   SignedFetchGetHeadersResponse,
   UserDataResponse
 } from '../types'
+import { normalizeFlatFetchResponse } from '../signedFetchResponse'
 import type { ChangeRealmRequest, ChangeRealmResponse } from '../../player/changeRealm'
 import type { CopyToClipboardRequest, CopyToClipboardResponse } from '../../player/copyToClipboard'
 import type { MovePlayerToRequest, MovePlayerToResponse } from '../../player/movePlayerTo'
@@ -202,6 +204,7 @@ import {
   runSceneEnginePointerTick,
   countWorkerMeshRenderers,
   shouldAttachUiMountSnapshot,
+  requestWorkerUiFullMountPuts,
   hostInjectNeedsSceneSystems,
   sceneEngineTickAfterInboundInject,
   sceneEngineTickDue,
@@ -247,6 +250,9 @@ const pendingConsumeMessages = new Map<number, (body: ConsumeMessagesResponse) =
 const pendingActiveVideoStreams = new Map<number, (body: ActiveVideoStreamsResponse) => void>()
 const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>()
 const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
+let signedFetchCallCount = 0
+let authResInboundCount = 0
+let authCrdtInboundCount = 0
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
 let lastUserData: NonNullable<UserDataResponse['data']> | null = null
@@ -971,6 +977,8 @@ function beginPointerDeliverBatch(label: string): void {
 function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: string): void {
   ctx.postMessage({ type: 'log', message: `[${level}] ${message}` } satisfies SceneWorkerOutbound)
 }
+;(globalThis as { __THREEJS_WORKER_LOG__?: (m: string) => void }).__THREEJS_WORKER_LOG__ = (m) =>
+  workerLog('log', m)
 
 /** Bound-VC follow rig — pose keys for VC + lookAt/parent entities. */
 const boundVcPoseKeys = new Map<number, string>()
@@ -1262,7 +1270,19 @@ function applyHostReservedSceneStore(): void {
     }
   }
   const RealmInfo = generated.RealmInfo(sceneEngine)
-  if (!RealmInfo.getOrNull(sceneEngine.RootEntity)) {
+  const existingRealm = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+    | {
+        baseUrl?: string
+        realmName?: string
+        networkId?: number
+        commsAdapter?: string
+        isPreview?: boolean
+        room?: string
+        isConnectedSceneRoom?: boolean
+      }
+    | null
+  const wantConnected = lastRealmInfo ? lastRealmInfo.isConnectedSceneRoom === true : true
+  if (!existingRealm) {
     const info = lastRealmInfo
     writeHostLwwNoDirty(RealmInfo, sceneEngine.RootEntity as number, {
       baseUrl: info?.baseUrl ?? '',
@@ -1271,7 +1291,18 @@ function applyHostReservedSceneStore(): void {
       commsAdapter: info?.commsAdapter ?? '',
       isPreview: info?.isPreview === true,
       room: info?.room,
-      isConnectedSceneRoom: info ? info.isConnectedSceneRoom === true : true
+      isConnectedSceneRoom: wantConnected
+    })
+    wroteRealm = true
+  } else if (wantConnected && existingRealm.isConnectedSceneRoom !== true) {
+    writeHostLwwNoDirty(RealmInfo, sceneEngine.RootEntity as number, {
+      baseUrl: existingRealm.baseUrl ?? lastRealmInfo?.baseUrl ?? '',
+      realmName: existingRealm.realmName ?? lastRealmInfo?.realmName ?? '',
+      networkId: existingRealm.networkId ?? lastRealmInfo?.networkId ?? 1,
+      commsAdapter: existingRealm.commsAdapter ?? lastRealmInfo?.commsAdapter ?? '',
+      isPreview: existingRealm.isPreview === true || lastRealmInfo?.isPreview === true,
+      room: existingRealm.room ?? lastRealmInfo?.room,
+      isConnectedSceneRoom: true
     })
     wroteRealm = true
   }
@@ -1663,7 +1694,14 @@ initSceneEngineScheduler({
     pointerUiMountEgressPending = true
   },
   postUiLwwPuts: (data) => {
-    postPlayModeColdCrdtFireAndForget(data)
+    // Play UI LWW is worker-authored Ui* — tag the mount set so main does not
+    // treat it as world-mesh gameplay (stripSceneUiCrdtBytes + no mount commit).
+    const uiEntities = sceneEngine ? collectWorkerUiMountEntityIds(sceneEngine) : []
+    logSceneUiOutbound(data, uiEntities)
+    ctx.postMessage(
+      { type: 'crdt-outbound', data, uiEntities } satisfies SceneWorkerOutbound,
+      [data.buffer]
+    )
   },
   postUiMountSnapshot: (snapshot, mountEntityIds) => {
     // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
@@ -3541,19 +3579,6 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
   return pendingInboundBinaries.splice(0)
 }
 
-const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
-
-function peekCustomEventName(payload: Uint8Array): string {
-  const n = Math.min(payload.byteLength, 96)
-  let ascii = ''
-  for (let i = 0; i < n; i++) {
-    const b = payload[i]!
-    ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ' '
-  }
-  return ascii.match(CUSTOM_EVENT_NAME_RE)?.[0] ?? '?'
-}
-
 function isolateSendBinaryInbound(chunks: Uint8Array[] | undefined): Uint8Array[] {
   if (!chunks?.length) return []
   return chunks.map((chunk) => isolateCommsBinaryMessage(chunk))
@@ -3578,6 +3603,12 @@ function inboundHasRoomReadyTypes(chunks: Uint8Array[]): boolean {
 function noteSendBinaryInbound(chunks: Uint8Array[]): void {
   if (!chunks.length) return
   sendBinaryInboundLogCount++
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (!decoded) continue
+    if (decoded.messageType === 9) authResInboundCount++
+    else if (decoded.messageType === 7) authCrdtInboundCount++
+  }
   const important = inboundHasRoomReadyTypes(chunks)
   if (!important && sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) {
     return
@@ -3624,6 +3655,33 @@ function resCrdtFirst(chunks: Uint8Array[]): Uint8Array[] {
   return res.length ? [...res, ...rest] : chunks
 }
 
+function ensureRealmInfoConnectedForAuthRes(): void {
+  if (!sceneEngine) return
+  const RealmInfo = generated.RealmInfo(sceneEngine)
+  const cur = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+    | {
+        baseUrl?: string
+        realmName?: string
+        networkId?: number
+        commsAdapter?: string
+        isPreview?: boolean
+        room?: string
+        isConnectedSceneRoom?: boolean
+      }
+    | null
+  if (cur?.isConnectedSceneRoom === true) return
+  writeHostLwwNoDirty(RealmInfo, sceneEngine.RootEntity as number, {
+    baseUrl: cur?.baseUrl ?? lastRealmInfo?.baseUrl ?? '',
+    realmName: cur?.realmName ?? lastRealmInfo?.realmName ?? '',
+    networkId: cur?.networkId ?? lastRealmInfo?.networkId ?? 1,
+    commsAdapter: cur?.commsAdapter ?? lastRealmInfo?.commsAdapter ?? '',
+    isPreview: cur?.isPreview === true || lastRealmInfo?.isPreview === true,
+    room: cur?.room ?? lastRealmInfo?.room,
+    isConnectedSceneRoom: true
+  })
+  if (lastRealmInfo) lastRealmInfo.isConnectedSceneRoom = true
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
   // RealmInfo must exist before AUTH_RES is processed or isRoomReady never flips
   // (joinRoster stays queued → no team → Snow Drift look-ahead melt never starts).
@@ -3635,6 +3693,7 @@ function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
       isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
     )
   )
+  if (inboundHasRoomReadyTypes(merged)) ensureRealmInfoConnectedForAuthRes()
   noteSendBinaryInbound(merged)
   return { data: merged }
 }
@@ -3803,11 +3862,12 @@ function rpcCommsSend(body: { message: string }): Promise<Record<string, never>>
 
 function rpcSignedFetch(body: SignedFetchRequest): Promise<SignedFetchResponse> {
   const id = ++requestId
-  // Visible in worker console + main [sceneWorker] if mirrored — proves scene called ADR SignedFetch.
+  signedFetchCallCount++
+  // warn so Help panel / console-capture cannot drop this (admission gate).
   try {
     const u = typeof body?.url === 'string' ? body.url : ''
     workerLog(
-      'log',
+      'warn',
       `[SignedFetch] worker→main ${body?.init?.method ?? 'GET'} ${u.slice(0, 120)}`
     )
   } catch {
@@ -3899,8 +3959,14 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     }
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs} realmConnected=${realmConnected}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs} realmConnected=${realmConnected} authRes=${authResInboundCount} authCrdt=${authCrdtInboundCount} signedFetch=${signedFetchCallCount}`
     )
+    if (heartbeatPass >= 2 && authCrdtInboundCount > 0 && authResInboundCount === 0) {
+      workerLog(
+        'warn',
+        `[sceneWorker] AUTH_CRDT flowing but AUTH_RES never delivered — isStateSyncronized stays false, scene SignedFetch admission will not start`
+      )
+    }
     flushInboundGuestLwwApplyProof()
   }, 5000)
 
@@ -4050,7 +4116,10 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   ensureMainCameraOnCameraEntity(sceneEngine)
   ensureReservedEntityTransforms(sceneEngine)
 
-  if (exports.onUpdate) {
+  // SDK Infinity startup already ran main() on the boot tick. A second engine.update
+  // here re-enters that system before it removes itself → startClient twice (two
+  // React trees, mount ids that never all carry UiTransform on main).
+  if (exports.onUpdate && !sdkStartupOwnsMain) {
     try {
       await Promise.resolve(exports.onUpdate(0))
       workerLog('log', '[sceneWorker] post-onStart onUpdate(0) — composite spawn kickstarted')
@@ -4060,6 +4129,8 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
         `[sceneWorker] post-onStart onUpdate failed — ${err instanceof Error ? err.message : String(err)}`
       )
     }
+  } else if (sdkStartupOwnsMain) {
+    workerLog('log', '[sceneWorker] skip extra onUpdate(0) — SDK startup already ran main this tick')
   }
   workerLog('log', 'scene worker ready — onStart complete')
   // Prefer structured UI snapshot on ready — same authority as hydration attachUiMount.
@@ -4326,7 +4397,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'signed-fetch-response') {
-    pendingSignedFetch.get(msg.id)?.(msg.body)
+    pendingSignedFetch.get(msg.id)?.(normalizeFlatFetchResponse(msg.body))
     pendingSignedFetch.delete(msg.id)
     return
   }
@@ -4387,6 +4458,11 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     queueSceneEngineTick()
     return
   }
+  if (msg.type === 'request-ui-full-mount') {
+    requestWorkerUiFullMountPuts()
+    queueSceneEngineTick()
+    return
+  }
   if (msg.type !== 'boot') return
 
   try {
@@ -4394,6 +4470,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneBootInProgress = true
     resetInboundGuestLwwForward()
     resetAuthResCoalesceClock()
+    signedFetchCallCount = 0
+    authResInboundCount = 0
+    authCrdtInboundCount = 0
     lastUserData = null
     lastRealmInfo = null
     cacheHostReserved(msg.reserved)

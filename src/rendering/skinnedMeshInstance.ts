@@ -85,20 +85,47 @@ function skeletonScore(skeleton: THREE.Skeleton): number {
  * parseAsync / SkeletonUtils.clone can leave head/face meshes on a second Skeleton whose
  * bones are not the mixer-driven ones. Point every skinned mesh at the primary skeleton.
  */
+function isUnderParallelWearable(obj: THREE.Object3D): boolean {
+  let node: THREE.Object3D | null = obj
+  while (node) {
+    if (node.userData.dclParallelWearable) return true
+    node = node.parent
+  }
+  return false
+}
+
 export function unifySkinnedMeshesToPrimarySkeleton(root: THREE.Object3D): void {
   const meshes: THREE.SkinnedMesh[] = []
   root.traverse((obj) => {
-    if (obj instanceof THREE.SkinnedMesh && obj.skeleton?.bones.length) meshes.push(obj)
+    if (!(obj instanceof THREE.SkinnedMesh) || !obj.skeleton?.bones.length) return
+    // Merge-failed wearables keep their own rig (Explorer parallel fallback).
+    // Rebinding them onto body_shape with the wearable bindMatrix freezes clothes in T-pose.
+    if (isUnderParallelWearable(obj)) return
+    meshes.push(obj)
   })
   if (meshes.length < 2) return
 
-  let primary = meshes[0]!.skeleton
-  let best = skeletonScore(primary)
-  for (const mesh of meshes) {
-    const score = skeletonScore(mesh.skeleton)
-    if (score > best) {
-      best = score
-      primary = mesh.skeleton
+  // Idle mixer binds on `wearable:body_shape`. If a hair/accessory skeleton wins
+  // on bone count, clothes stay on that rig and the body mixer never moves them
+  // (remote T-pose: PeterParkerWeb3 vs simple guests).
+  let bodySkeleton: THREE.Skeleton | null = null
+  const bodyRoot = root.getObjectByName('wearable:body_shape')
+  bodyRoot?.traverse((obj) => {
+    if (bodySkeleton) return
+    if (obj instanceof THREE.SkinnedMesh && obj.skeleton?.bones.length) {
+      bodySkeleton = obj.skeleton
+    }
+  })
+
+  let primary = bodySkeleton ?? meshes[0]!.skeleton
+  if (!bodySkeleton) {
+    let best = skeletonScore(primary)
+    for (const mesh of meshes) {
+      const score = skeletonScore(mesh.skeleton)
+      if (score > best) {
+        best = score
+        primary = mesh.skeleton
+      }
     }
   }
 

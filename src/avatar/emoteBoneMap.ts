@@ -153,3 +153,58 @@ export function remapClipToAvatar(
   if (!tracks.size) return null
   return new THREE.AnimationClip(clip.name, clip.duration, tracks.tracks())
 }
+
+/**
+ * Write clip sample onto every unique skeleton used by a *visible* SkinnedMesh.
+ * Uses skeleton.bones directly — AnimationMixer PropertyBinding can update a
+ * same-named bone in the graph that is not the array the mesh skins with.
+ */
+export function applyClipToVisibleSkeletons(
+  clip: THREE.AnimationClip,
+  avatarRoot: THREE.Object3D,
+  time: number
+): { skeletons: number; bones: number } {
+  const t = clip.duration > 0 ? ((time % clip.duration) + clip.duration) % clip.duration : 0
+  const seen = new Set<THREE.Skeleton>()
+  let bonesApplied = 0
+  avatarRoot.traverse((obj) => {
+    const mesh = obj as THREE.SkinnedMesh
+    if (!mesh.isSkinnedMesh || !mesh.visible || !mesh.skeleton?.bones.length) return
+    if (seen.has(mesh.skeleton)) return
+    seen.add(mesh.skeleton)
+    bonesApplied += applyClipToSkeleton(clip, mesh.skeleton, t)
+    mesh.skeleton.update()
+  })
+  return { skeletons: seen.size, bones: bonesApplied }
+}
+
+function applyClipToSkeleton(clip: THREE.AnimationClip, skeleton: THREE.Skeleton, time: number): number {
+  const byName = new Map<string, THREE.Bone>()
+  for (const bone of skeleton.bones) {
+    byName.set(bone.name, bone)
+    byName.set(normalizeBoneName(bone.name), bone)
+  }
+  const names = new Set(byName.keys())
+  let applied = 0
+  for (const track of clip.tracks) {
+    const dot = track.name.lastIndexOf('.')
+    if (dot <= 0) continue
+    const boneName = track.name.slice(0, dot)
+    const prop = track.name.slice(dot + 1)
+    const resolved = resolveBoneName(normalizeBoneName(boneName), names) ?? boneName
+    const bone = byName.get(resolved) ?? byName.get(normalizeBoneName(resolved))
+    if (!bone) continue
+    const interpolant = (
+      track as THREE.KeyframeTrack & { createInterpolant: () => { evaluate: (t: number) => Float32Array } }
+    ).createInterpolant()
+    const value = interpolant.evaluate(time)
+    if (prop === 'quaternion' && value.length >= 4) {
+      bone.quaternion.set(value[0]!, value[1]!, value[2]!, value[3]!)
+      applied++
+    } else if (prop === 'position' && value.length >= 3) {
+      bone.position.set(value[0]!, value[1]!, value[2]!)
+      applied++
+    }
+  }
+  return applied
+}

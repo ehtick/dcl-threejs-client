@@ -48,6 +48,17 @@ export function classifyGltfCollisionMesh(
   return 'unnamed'
 }
 
+/**
+ * Skinned visible art is never a PhysX / pointer hull (Explorer).
+ * Including it in PE occlusion swallows sibling MeshCollider click boxes
+ * (NPC torso PE behind a Mixamo body).
+ */
+export function gltfMeshIsSkinnedVisibleArt(mesh: THREE.Mesh, gltfRoot: THREE.Object3D): boolean {
+  const skinned = (mesh as THREE.SkinnedMesh).isSkinnedMesh === true
+  if (!skinned) return false
+  return classifyGltfCollisionMesh(mesh, gltfRoot) !== 'inv'
+}
+
 /** True when this mesh should become a PhysX hull for the entity's GltfContainer masks. */
 export function gltfMeshContributesPhysics(
   mesh: THREE.Mesh,
@@ -55,9 +66,8 @@ export function gltfMeshContributesPhysics(
   hasVisiblePhysics: boolean,
   hasInvisiblePhysics: boolean
 ): boolean {
-  const skinned = (mesh as THREE.SkinnedMesh).isSkinnedMesh === true
+  if (gltfMeshIsSkinnedVisibleArt(mesh, gltfRoot)) return false
   const kind = classifyGltfCollisionMesh(mesh, gltfRoot)
-  if (skinned && kind !== 'inv') return false
   if (kind === 'inv') return hasInvisiblePhysics
   return hasVisiblePhysics
 }

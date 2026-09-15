@@ -581,8 +581,10 @@ function makeMaterial(xfer: XferMaterial, textures: THREE.Texture[]): THREE.Mate
   mat.transparent = xfer.transparent
   mat.alphaTest = xfer.alphaTest
   mat.side = xfer.side as THREE.Side
-  // ALPHA_BLEND volumes (fog, mist) must not write depth or the floor occludes them.
-  mat.depthWrite = xfer.transparent && xfer.opacity < 0.95 ? false : xfer.depthWrite
+  // Fog/mist (low opacity BLEND) must not write depth or the floor occludes them.
+  // Near-opaque BLEND (hedges, banners) MUST write depth — GLTFLoader sets
+  // depthWrite=false for all BLEND, which made foliage see-through vs Explorer.
+  mat.depthWrite = xfer.transparent && xfer.opacity < 0.95 ? false : true
   mat.depthTest = xfer.depthTest
   if ('roughness' in mat) mat.roughness = xfer.roughness
   if ('metalness' in mat) mat.metalness = xfer.metalness

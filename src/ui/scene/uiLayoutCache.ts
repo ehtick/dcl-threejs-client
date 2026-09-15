@@ -3,6 +3,7 @@ import type { PBUiInput } from '@dcl/ecs/dist/components/generated/pb/decentrala
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { LayoutBox } from './yogaLayout'
+import { uiTextContentKey } from './uiTextFingerprint'
 import { isUiEntityVisible } from './uiVisibility'
 import { normalizeYGDisplay } from './yogaEnums'
 import type { UiEntityRecord } from './uiTree'
@@ -79,7 +80,7 @@ export function entityUiVisualPaintKey(
   const d = normalizeYGDisplay(transform.display)
   let t = ''
   if (text?.value != null) {
-    t = `t${text.value.length}:${text.value.slice(0, 48)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${text.color?.r ?? 1},${text.color?.g ?? 1},${text.color?.b ?? 1},${text.color?.a ?? 1}`
+    t = `t${uiTextContentKey(text.value)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${text.color?.r ?? 1},${text.color?.g ?? 1},${text.color?.b ?? 1},${text.color?.a ?? 1}`
   }
   let b = ''
   if (bg) {

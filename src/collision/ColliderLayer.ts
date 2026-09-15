@@ -28,6 +28,17 @@ export function resolveCollisionMask(mask?: number): number {
   return mask ?? DEFAULT_COLLISION_MASK
 }
 
+/**
+ * `PBMeshCollider.collision_mask` is optional; proto default is POINTER|PHYSICS.
+ * `MeshCollider.setBox(entity)` omits the field. CRDT / protobufjs often materializes
+ * that as `0` (CL_NONE) — same hole TriggerArea already special-cases. `0` from
+ * setBox is not an authored disable (SDK helper treats 0 as omitted).
+ */
+export function resolveMeshColliderCollisionMask(mask?: number): number {
+  if (mask == null || mask === 0) return DEFAULT_COLLISION_MASK
+  return mask
+}
+
 export function hasColliderLayer(mask: number, layer: number): boolean {
   return (mask & layer) !== 0
 }
